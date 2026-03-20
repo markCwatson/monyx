@@ -1,0 +1,50 @@
+# Flutter / Dart tool cache
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+
+# Build output
+build/
+
+# Generated files (run `dart run build_runner build` to regenerate)
+*.g.dart
+*.freezed.dart
+*.mocks.dart
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# macOS
+.DS_Store
+
+# Secrets / environment
+.env
+.env.*
+!.env.example
+google-services.json
+GoogleService-Info.plist
+
+# Android
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/google-services.json
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/flutter_export_environment.sh
+ios/Runner/GoogleService-Info.plist
+
+# Coverage
+coverage/
+*.lcov
+
+# Logs
+*.log
+pubspec.lock
