@@ -1,2 +1,281 @@
 # monyx
-Instant on-map ballistics app
+
+Offline-first hunting map with instant on-map ballistic calculations. Drop a pin on the map, and get scope corrections (elevation + wind) in inches, MOA, and clicks — using your rifle profile, real weather, and terrain elevation.
+
+## POC Architecture
+
+The proof-of-concept is a **pure Flutter app with no backend**. Everything runs on-device:
+
+```
+┌─────────────────────────────────────────────┐
+│                 Flutter App                 │
+├──────────┬──────────┬───────────┬───────────┤
+│  Map     │ Profiles │  Weather  │ Ballistics│
+│  Screen  │  Screen  │  Service  │  Engine   │
+├──────────┴──────────┴───────────┴───────────┤
+│  BLoC state management                      │
+├─────────────────────────────────────────────┤
+│  Hive (local cache)    GPS (geolocator)     │
+├─────────────────────────────────────────────┤
+│  Mapbox SDK         Open-Meteo API          │
+└─────────────────────────────────────────────┘
+```
+
+**Core loop:** Launch → GPS plots you on the map → Create a rifle/ammo profile → Long-press to drop a target pin → App computes range, elevation delta, fetches weather → Dart ballistic solver runs on-device → Solution card shows UP/DOWN and LEFT/RIGHT corrections in inches + MOA + clicks.
+
+### Key tech choices
+
+| Layer         | Tech                           | Why                                             |
+| ------------- | ------------------------------ | ----------------------------------------------- |
+| UI framework  | Flutter (iOS + Android)        | Single codebase, native performance             |
+| Maps          | Mapbox Maps Flutter SDK        | Official offline support, satellite imagery     |
+| State         | BLoC pattern (`flutter_bloc`)  | Predictable state, testable, industry standard  |
+| Local storage | Hive                           | Fast NoSQL cache, no native deps, works offline |
+| GPS           | `geolocator`                   | Cross-platform location with background support |
+| Weather       | Open-Meteo API                 | Free, no API key for dev, worldwide coverage    |
+| Ballistics    | Custom Dart solver (on-device) | Works fully offline, point-mass 3-DoF model     |
+
+## Ballistic Engine
+
+The solver is a pure-Dart port of [pyballistic](https://github.com/dbookstaber/pyballistic) (py-ballisticcalc), a well-tested open-source ballistic calculator. All calculations run on-device with no network required.
+
+### Algorithm
+
+| Component                | Detail                                                                                          |
+| ------------------------ | ----------------------------------------------------------------------------------------------- |
+| **Model**                | Point-mass 3-DoF (x = downrange, y = drop, z = windage)                                         |
+| **Integrator**           | Classic RK4, fixed time step 0.0025 s                                                           |
+| **Drag tables**          | Standard G1 (80 entries) and G7 (84 entries), Cd vs Mach                                        |
+| **Drag interpolation**   | PCHIP (monotone cubic Hermite, Fritsch-Carlson slopes) — C1 continuous, shape-preserving        |
+| **Standard Drag Factor** | `Cd(mach) × 2.08551e-04 / BC` where the constant = ρ₀ × π / (4 × 2 × 144), ρ₀ = 0.076474 lb/ft³ |
+| **Air density**          | CIPM-2007 formula — saturation vapour pressure, enhancement factor, compressibility factor      |
+| **Altitude correction**  | Lapse-rate model (−0.0019812 K/ft) updates density ratio and Mach at each integration step      |
+| **Speed of sound**       | 49.0223 × √(°R) ft/s                                                                            |
+| **Zero-finding**         | Ridder's method (guaranteed convergence, ~60 iterations max)                                    |
+| **Gravity**              | 32.17405 ft/s²                                                                                  |
+
+### How a shot is solved
+
+1. **Build atmosphere** — station temperature, pressure, humidity → CIPM-2007 air density in kg/m³ → density ratio (local / standard 1.225 kg/m³).
+2. **Find zero angle** — under ICAO standard atmosphere, find the bore elevation (via Ridder's method) that puts the bullet at y = 0 at the zero range.
+3. **Add shot angle** — if the target has an elevation difference (from DEM), the look angle is added to the zero angle.
+4. **Run trajectory** — RK4 integration with altitude-dependent density and Mach. At each step: compute `k_m = density_ratio × drag_by_mach(speed/Mach)` once, then evaluate four sub-step accelerations (gravity + drag opposing air-relative velocity). Wind is a constant headwind/crosswind vector subtracted from ground velocity.
+5. **Measure drop** — the line-of-sight from scope (at sight height) to target (at elevation offset) is computed at the bullet's final x position. Drop = bullet y − LOS y. Windage = bullet z.
+6. **Convert** — drop/drift in inches → MOA → clicks, plus velocity, energy, and time of flight.
+
+### Test data
+
+The solver is validated against pyballistic's reference trajectories:
+
+| Profile                                | Range   | Velocity | Drop   | Source                   |
+| -------------------------------------- | ------- | -------- | ------ | ------------------------ |
+| .308 168gr BC 0.223 G1, MV 2750, 2" SH | 100 yd  | 2351 fps | 0"     | pyballistic test_path_g1 |
+| .308 168gr BC 0.223 G1, MV 2750, 2" SH | 500 yd  | 1169 fps | −87.9" | pyballistic test_path_g1 |
+| .308 168gr BC 0.223 G1, MV 2750, 2" SH | 1000 yd | 776 fps  | −824"  | pyballistic test_path_g1 |
+| .308 168gr BC 0.223 G7, MV 2750, 2" SH | 100 yd  | 2545 fps | 0"     | pyballistic test_path_g7 |
+| .308 168gr BC 0.223 G7, MV 2750, 2" SH | 500 yd  | 1814 fps | −56.2" | pyballistic test_path_g7 |
+| .308 168gr BC 0.223 G7, MV 2750, 2" SH | 1000 yd | 1086 fps | −400"  | pyballistic test_path_g7 |
+
+Tolerances: velocity ±15 fps, drop ±3" (500 yd) / ±10" (1000 yd).
+
+### What the POC deliberately skips
+
+- No backend / no auth / no sync
+- No land ownership overlays
+- No offline map downloads
+- Single rifle profile only
+- No MIL output (inches + MOA + clicks only)
+- No shot history
+- Imperial units only
+
+## Dev Environment Setup (macOS)
+
+### Prerequisites
+
+- **Flutter SDK** (stable channel, 3.41+)
+- **Xcode** with iOS Simulator installed
+- **Android Studio** with Android SDK 36+
+- **CocoaPods** (`brew install cocoapods`)
+- **Mapbox account** with two tokens (see below)
+
+### 1. Clone and install dependencies
+
+```bash
+git clone <repo-url> && cd monyx
+flutter pub get
+```
+
+### 2. Mapbox token setup
+
+You need **two** Mapbox tokens. Neither is stored in the repo.
+
+#### Public token (used at runtime in the app)
+
+Create a public token at [mapbox.com/account/access-tokens](https://account.mapbox.com/access-tokens/) with default scopes:
+
+- `styles:tiles`, `styles:read`, `fonts:read`, `datasets:read`
+
+Then create a `.env` file in the project root (gitignored):
+
+```bash
+cp .env.example .env
+# Edit .env and paste your public token
+```
+
+```
+MAPBOX_PUBLIC_TOKEN=pk.your_token_here
+```
+
+#### Secret token (used at build time to download the SDK)
+
+Create a **secret** token with the `downloads:read` scope. This token is used by CocoaPods (iOS) and Gradle (Android) to authenticate when downloading the Mapbox SDK binary. It never ships in the app.
+
+**iOS — `~/.netrc`**
+
+Add to `~/.netrc` (create it if it doesn't exist):
+
+```
+machine api.mapbox.com
+  login mapbox
+  password sk.your_secret_token_here
+```
+
+Then restrict permissions:
+
+```bash
+chmod 600 ~/.netrc
+```
+
+> `~/.netrc` is a standard Unix credential file. Tools like `curl`, CocoaPods, and Gradle read it to authenticate HTTP requests. Mapbox's CocoaPods spec fetches the SDK from `api.mapbox.com` and uses `~/.netrc` for auth automatically.
+
+**Android — `~/.gradle/gradle.properties`**
+
+Add to `~/.gradle/gradle.properties` (create if needed):
+
+```properties
+SDK_REGISTRY_TOKEN=sk.your_secret_token_here
+```
+
+### 3. Verify setup
+
+```bash
+flutter doctor        # Should show no issues
+```
+
+## Build, Test & Run
+
+All commands should be run from the project root.
+
+### Analyze (lint)
+
+```bash
+flutter analyze
+```
+
+### Run tests
+
+```bash
+flutter test                            # All tests
+flutter test test/widget_test.dart      # Ballistics solver tests only
+```
+
+### Boot a simulator
+
+**iOS (recommended for dev):**
+
+```bash
+open -a Simulator                                           # Opens Simulator.app
+xcrun simctl boot "iPhone 15 Pro"                           # Boot a specific device
+```
+
+**Android:**
+
+```bash
+flutter emulators --launch Nexus_6P_API_34                  # Or whichever AVD you have
+```
+
+Check available devices:
+
+```bash
+flutter devices
+```
+
+### Set simulator GPS location
+
+Simulators don't use your Mac's real GPS — they default to San Francisco. Override it:
+
+**iOS Simulator:**
+
+```bash
+xcrun simctl location <device-id> set <lat>,<lon>
+# Example: Nova Scotia
+xcrun simctl location 4873414E set 45.0618,-63.4050
+```
+
+Or via the Simulator app menu: **Features → Location → Custom Location**.
+
+**Android Emulator:**
+
+```bash
+adb emu geo fix <lon> <lat>
+# Example: Nova Scotia (note: longitude comes first)
+adb emu geo fix -63.4050 45.0618
+```
+
+Or via Android Studio: **Extended Controls (⋯) → Location** → enter coordinates → **Set Location**.
+
+### Run the app
+
+The Mapbox public token is passed at compile time from `.env` — never hardcoded:
+
+```bash
+flutter run --dart-define-from-file=.env                    # Picks first available device
+flutter run --dart-define-from-file=.env -d <device-id>     # Target a specific device
+```
+
+### Build (release)
+
+```bash
+flutter build ios --dart-define-from-file=.env              # iOS archive
+flutter build apk --dart-define-from-file=.env              # Android APK
+```
+
+### 4. Android SDK note
+
+Flutter 3.41+ requires Android SDK 36. If `flutter doctor` complains:
+
+```bash
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+$HOME/Library/Android/sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0"
+```
+
+## Project Structure
+
+```
+lib/
+  main.dart                     — Entry point, Hive init, BLoC providers
+  config.dart                   — Compile-time env config (--dart-define)
+  screens/
+    map_screen.dart             — Mapbox map + GPS + pin drop + solution trigger
+    profile_screen.dart         — Rifle/ammo profile form
+  models/
+    rifle_profile.dart          — Rifle + ammo data classes + JSON
+    weather_data.dart           — Open-Meteo response model
+    shot_solution.dart          — Solver output model
+  ballistics/
+    drag_tables.dart            — G1/G7 Cd-vs-Mach tables + PCHIP spline interpolation
+    atmosphere.dart             — CIPM-2007 air density, speed of sound, lapse-rate AtmoState
+    solver.dart                 — RK4 point-mass 3-DoF solver (pyballistic port)
+    conversions.dart            — Inches ↔ MOA ↔ clicks, haversine, wind decomp
+  services/
+    weather_service.dart        — Open-Meteo HTTP adapter
+    elevation_service.dart      — Open-Meteo elevation queries
+    profile_service.dart        — Hive persistence for rifle profiles
+  blocs/
+    profile_cubit.dart          — Profile load/save state
+    solution_cubit.dart         — Shot solution computation state
+  widgets/
+    solution_card.dart          — Bottom sheet with corrections
+test/
+  widget_test.dart              — Ballistics solver smoke tests
+```
