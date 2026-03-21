@@ -51,6 +51,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Monyx uses the camera to photograph animal tracks for species identification.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Monyx accesses your photo library so you can select track images for species identification.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Monyx saves annotated track identification images to your photo library.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
