@@ -6,11 +6,13 @@ import '../models/weather_data.dart';
 class SolutionCard extends StatelessWidget {
   final ShotSolution solution;
   final VoidCallback onDismiss;
+  final VoidCallback? onDelete;
 
   const SolutionCard({
     super.key,
     required this.solution,
     required this.onDismiss,
+    this.onDelete,
   });
 
   @override
@@ -49,7 +51,48 @@ class SolutionCard extends StatelessWidget {
                     letterSpacing: 1.2,
                   ),
                 ),
-                _weatherBadge(),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _weatherBadge(),
+                    if (onDelete != null) ...[
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onTap: onDelete,
+                        child: Container(
+                          width: 32,
+                          height: 32,
+                          decoration: BoxDecoration(
+                            color: Colors.red[800],
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.delete,
+                            color: Colors.white70,
+                            size: 18,
+                          ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: onDismiss,
+                      child: Container(
+                        width: 32,
+                        height: 32,
+                        decoration: BoxDecoration(
+                          color: Colors.grey[800],
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.close,
+                          color: Colors.white70,
+                          size: 18,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
             const SizedBox(height: 4),

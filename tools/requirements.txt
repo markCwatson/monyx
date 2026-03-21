@@ -1,0 +1,25 @@
+# Python dependencies for exporting AnimalClue YOLO models to TFLite.
+#
+# Usage:
+#   python -m venv tools/.venv
+#   source tools/.venv/bin/activate
+#   pip install -r tools/requirements.txt
+#   python tools/export_models.py
+#
+# Tested with Python 3.13 on macOS (Apple Silicon).
+
+# --- Core ---
+ultralytics>=8.4,<9          # YOLOv11 model loading + ONNX export
+huggingface_hub>=1.7,<2      # Download .pt weights from HuggingFace
+
+# --- TensorFlow (needed for ONNX → TFLite conversion) ---
+tensorflow>=2.21,<3          # TF 2.21+ required for Python 3.13
+ai-edge-litert>=2.1,<3       # TFLite runtime (used by tf converter)
+
+# --- ONNX pipeline (ultralytics .pt → ONNX → TFLite) ---
+onnx>=1.20,<2
+onnxruntime>=1.24,<2
+onnxslim>=0.1.90,<1
+onnx2tf>=1.28,<2             # ONNX → TF SavedModel → TFLite
+sng4onnx>=2.0,<3             # ONNX graph utility (onnx2tf dependency)
+onnx_graphsurgeon>=0.5,<1    # ONNX graph manipulation (onnx2tf dependency)

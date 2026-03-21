@@ -49,6 +49,10 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Monyx uses the camera to photograph animal tracks for species identification.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Monyx saves annotated track identification images to your photo library.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Monyx needs your location to plot you on the map and compute ballistic solutions.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

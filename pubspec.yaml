@@ -1,7 +1,7 @@
 name: monyx
 description: 'Offline hunting map + ballistics calculator'
 publish_to: 'none'
-version: 1.0.1+2
+version: 1.0.2+1
 
 environment:
   sdk: ^3.11.3
@@ -22,6 +22,11 @@ dependencies:
   path_provider: ^2.1.5
   google_mobile_ads: ^5.3.0
   in_app_purchase: ^3.2.0
+  image_picker: ^1.1.2
+  tflite_flutter: ^0.11.0
+  image: ^4.3.0
+  uuid: ^4.5.1
+  gal: ^2.3.0
 
 dev_dependencies:
   flutter_test:
@@ -38,7 +43,8 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # To add assets to your application, add an assets section, like this:
+  assets:
+    - assets/models/
   # assets:
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg

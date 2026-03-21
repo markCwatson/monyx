@@ -7,11 +7,14 @@ import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 import 'blocs/profile_cubit.dart';
 import 'blocs/solution_cubit.dart';
 import 'blocs/subscription_cubit.dart';
+import 'blocs/track_cubit.dart';
 import 'config.dart';
 import 'screens/map_screen.dart';
 import 'services/elevation_service.dart';
 import 'services/profile_service.dart';
 import 'services/subscription_service.dart';
+import 'services/track_detector.dart';
+import 'services/track_service.dart';
 import 'services/weather_service.dart';
 
 void main() async {
@@ -50,6 +53,10 @@ class MonyxApp extends StatelessWidget {
         ),
         BlocProvider(
           create: (_) => SubscriptionCubit(subscriptionService)..load(),
+        ),
+        BlocProvider(
+          create: (_) =>
+              TrackCubit(detector: TrackDetector(), service: TrackService()),
         ),
       ],
       child: MaterialApp(
