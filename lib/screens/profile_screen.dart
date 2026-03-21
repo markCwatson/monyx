@@ -5,7 +5,9 @@ import '../blocs/profile_cubit.dart';
 import '../models/rifle_profile.dart';
 
 class ProfileScreen extends StatefulWidget {
-  const ProfileScreen({super.key});
+  final RifleProfile? editProfile;
+  final int? editIndex;
+  const ProfileScreen({super.key, this.editProfile, this.editIndex});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -29,10 +31,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   void initState() {
     super.initState();
-    final state = context.read<ProfileCubit>().state;
-    final p = state is ProfileLoaded
-        ? state.profile
-        : RifleProfile.default308();
+    final p = widget.editProfile ?? _defaultFromState();
 
     _name = TextEditingController(text: p.name);
     _caliber = TextEditingController(text: p.caliber);
@@ -68,6 +67,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.dispose();
   }
 
+  RifleProfile _defaultFromState() {
+    final state = context.read<ProfileCubit>().state;
+    return state is ProfileLoaded ? state.profile : RifleProfile.default308();
+  }
+
   void _save() {
     if (!_formKey.currentState!.validate()) return;
 
@@ -85,7 +89,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
       dragModel: _dragModel,
     );
 
-    context.read<ProfileCubit>().save(profile);
+    final cubit = context.read<ProfileCubit>();
+    if (widget.editProfile != null) {
+      // Editing an existing profile — save overwrites the active one
+      cubit.save(profile);
+    } else {
+      // Adding new
+      cubit.add(profile);
+    }
     Navigator.of(context).pop();
   }
 

@@ -17,10 +17,16 @@ class ProfileInitial extends ProfileState {
 }
 
 class ProfileLoaded extends ProfileState {
-  final RifleProfile profile;
-  const ProfileLoaded(this.profile);
+  final RifleProfile profile; // currently active
+  final List<RifleProfile> profiles; // all saved profiles
+  final int activeIndex;
+  const ProfileLoaded(
+    this.profile, {
+    this.profiles = const [],
+    this.activeIndex = 0,
+  });
   @override
-  List<Object?> get props => [profile];
+  List<Object?> get props => [profile, profiles, activeIndex];
 }
 
 class ProfileEmpty extends ProfileState {
@@ -35,21 +41,62 @@ class ProfileCubit extends Cubit<ProfileState> {
   ProfileCubit(this._service) : super(const ProfileInitial());
 
   Future<void> load() async {
-    final profile = await _service.loadProfile();
-    if (profile != null) {
-      emit(ProfileLoaded(profile));
-    } else {
+    final profiles = await _service.loadProfiles();
+    if (profiles.isEmpty) {
       emit(const ProfileEmpty());
+      return;
     }
+    final idx = await _service.loadActiveIndex();
+    final safeIdx = idx < profiles.length ? idx : 0;
+    emit(
+      ProfileLoaded(
+        profiles[safeIdx],
+        profiles: profiles,
+        activeIndex: safeIdx,
+      ),
+    );
   }
 
   Future<void> save(RifleProfile profile) async {
     await _service.saveProfile(profile);
-    emit(ProfileLoaded(profile));
+    await load(); // reload full list
+  }
+
+  /// Add a new profile and make it active.
+  Future<void> add(RifleProfile profile) async {
+    final profiles = await _service.loadProfiles();
+    profiles.add(profile);
+    await _service.saveProfiles(profiles);
+    await _service.saveActiveIndex(profiles.length - 1);
+    await load();
+  }
+
+  /// Switch active profile by index.
+  Future<void> setActive(int index) async {
+    await _service.saveActiveIndex(index);
+    await load();
+  }
+
+  /// Delete a profile by index.
+  Future<void> deleteAt(int index) async {
+    final profiles = await _service.loadProfiles();
+    if (index < 0 || index >= profiles.length) return;
+    profiles.removeAt(index);
+    await _service.saveProfiles(profiles);
+    if (profiles.isEmpty) {
+      emit(const ProfileEmpty());
+    } else {
+      await _service.saveActiveIndex(0);
+      await load();
+    }
   }
 
   Future<void> delete() async {
     await _service.deleteProfile();
-    emit(const ProfileEmpty());
+    await load();
+    final profiles = await _service.loadProfiles();
+    if (profiles.isEmpty) {
+      emit(const ProfileEmpty());
+    }
   }
 }

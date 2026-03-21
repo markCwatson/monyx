@@ -83,7 +83,6 @@ Tolerances: velocity ±15 fps, drop ±3" (500 yd) / ±10" (1000 yd).
 - No backend / no auth / no sync
 - No land ownership overlays
 - No offline map downloads
-- Single rifle profile only
 - No MIL output (inches + MOA + clicks only)
 - No shot history
 - Imperial units only
@@ -209,7 +208,7 @@ Simulators don't use your Mac's real GPS — they default to San Francisco. Over
 ```bash
 xcrun simctl location <device-id> set <lat>,<lon>
 # Example: Nova Scotia
-xcrun simctl location 4873414E set 45.0618,-63.4050
+xcrun simctl location 4873414E-D97C-441E-AB4E-7A842CDCE72E set 45.0618,-63.4050
 ```
 
 Or via the Simulator app menu: **Features → Location → Custom Location**.
@@ -256,8 +255,9 @@ lib/
   main.dart                     — Entry point, Hive init, BLoC providers
   config.dart                   — Compile-time env config (--dart-define)
   screens/
-    map_screen.dart             — Mapbox map + GPS + pin drop + solution trigger
-    profile_screen.dart         — Rifle/ammo profile form
+    map_screen.dart             — Mapbox map + GPS + pin drop + solution trigger + banner ad
+    profile_list_screen.dart    — Profile selector (free: 1, pro: unlimited) + upgrade prompt
+    profile_screen.dart         — Rifle/ammo profile form (create/edit)
   models/
     rifle_profile.dart          — Rifle + ammo data classes + JSON
     weather_data.dart           — Open-Meteo response model
@@ -270,12 +270,106 @@ lib/
   services/
     weather_service.dart        — Open-Meteo HTTP adapter
     elevation_service.dart      — Open-Meteo elevation queries
-    profile_service.dart        — Hive persistence for rifle profiles
+    profile_service.dart        — Hive persistence for rifle profiles (supports multi-profile)
+    ad_service.dart             — AdMob ad-unit IDs (test in debug, real in release)
+    subscription_service.dart   — In-app purchase wrapper (StoreKit / Google Play)
   blocs/
-    profile_cubit.dart          — Profile load/save state
+    profile_cubit.dart          — Profile load/save/switch state (multi-profile)
     solution_cubit.dart         — Shot solution computation state
+    subscription_cubit.dart     — Free/Pro subscription state
   widgets/
     solution_card.dart          — Bottom sheet with corrections
+ios/
+  MonyxProducts.storekit        — Xcode StoreKit test configuration
 test/
   widget_test.dart              — Ballistics solver smoke tests
 ```
+
+## Monetisation
+
+The app is free with ads (AdMob). A "Monyx Pro" monthly subscription removes ads and unlocks unlimited rifle/ammo profiles.
+
+### Ads (Google AdMob)
+
+Banner ads are shown at the bottom of the map screen for free-tier users.
+
+| Item                       | Value                                                                                      |
+| -------------------------- | ------------------------------------------------------------------------------------------ |
+| **AdMob App ID (iOS)**     | `ca-app-pub-8357274860394786~6932367408`                                                   |
+| **Banner Ad Unit (iOS)**   | `ca-app-pub-8357274860394786/5507605098`                                                   |
+| **Test/Release switching** | Automatic — `kReleaseMode` in [lib/services/ad_service.dart](lib/services/ad_service.dart) |
+| **Banner type**            | Anchored adaptive (auto-sizes to device width)                                             |
+
+**How it works:**
+
+- Debug / simulator builds use Google's test ad unit ID → shows a "Test Ad" label, safe to tap.
+- Release builds (`flutter build ipa`) use the real ad unit ID → real ads served.
+- The App ID in `ios/Runner/Info.plist` (`GADApplicationIdentifier`) is always the real one — only ad _unit_ IDs switch.
+- Pro subscribers never see ads — the banner is not loaded when `SubscriptionCubit` reports `SubscriptionPro`.
+
+### Subscription (In-App Purchase)
+
+| Item           | Value                                     |
+| -------------- | ----------------------------------------- |
+| **Product ID** | `monyx_pro_monthly`                       |
+| **Type**       | Auto-renewable subscription, 1 month      |
+| **Price**      | $4.99/mo (configure in App Store Connect) |
+| **Benefits**   | No ads, unlimited rifle/ammo profiles     |
+
+The subscription is managed by `SubscriptionService` → `SubscriptionCubit`. Free users see a single profile and a banner ad. Pro users see a profile list and no ads.
+
+**For production**, the subscription is configured in **App Store Connect** — you create the product there with the same product ID (`monyx_pro_monthly`), set the price, and submit for review. The app code talks to the real App Store automatically; no code changes are needed.
+
+### Testing Subscriptions Locally (Xcode StoreKit)
+
+Xcode's StoreKit Configuration lets you simulate purchases **locally in the simulator** without an App Store Connect account or sandbox tester. This is **only for development/testing** — it has no effect on production builds.
+
+#### One-time setup
+
+The StoreKit config file must be created inside Xcode (hand-authored JSON won't work reliably):
+
+1. Open the Xcode workspace:
+   ```bash
+   open ios/Runner.xcworkspace
+   ```
+2. **File → New → File** (⌘N) → search for **StoreKit** → select **StoreKit Configuration File** → **Next**.
+3. Name it `MonyxProducts`, set Group to `Runner`, ensure the target is checked → **Create**.
+4. In the visual editor, click **+** → **Add Auto-Renewable Subscription**:
+   - **Group name**: `Monyx Pro`
+   - **Reference Name**: `Monyx Pro Monthly`
+   - **Product ID**: `monyx_pro_monthly` ← must match exactly
+   - **Price**: `2.99`
+   - **Duration**: `1 Month`
+   - Add a display name/description in the Localization section.
+5. Set the scheme to use it: **Product → Scheme → Edit Scheme** (⌘⇧<) → **Run → Options** → **StoreKit Configuration** → select `MonyxProducts.storekit`.
+
+#### Running with StoreKit
+
+**Important:** `flutter run` does not apply Xcode scheme settings. To test IAP you must launch from Xcode:
+
+1. First, generate the dart-define config (only needed when `.env` changes):
+   ```bash
+   flutter run --dart-define-from-file=.env
+   ```
+   Then stop the app (`q`).
+2. In Xcode, press **⌘R** to build and run. Xcode applies the StoreKit config at launch.
+3. In the app, tap the FAB (profile button) → tap the **★ Upgrade to Pro** banner → tap **Subscribe**.
+4. Xcode's StoreKit test environment handles the purchase immediately — no Apple ID needed.
+5. The app should hide the banner ad and unlock unlimited profiles.
+
+For everything else (map, ballistics, ads), `flutter run --dart-define-from-file=.env` works fine.
+
+#### Manage test transactions
+
+In Xcode: **Debug → StoreKit → Manage Transactions**. From here you can:
+
+- **Approve / decline** pending transactions
+- **Refund** a purchase (test the downgrade flow)
+- **Delete** all transactions (reset to free tier)
+- **Force renewal** to simulate a subscription renewing
+
+#### Expire or cancel
+
+In the transaction manager, select the subscription and click **Cancel Subscription** or **Request Refund** to test what happens when a user downgrades.
+
+> **Note:** The `.storekit` file is only for local testing. It has no secrets and no effect on production. Real subscriptions are managed entirely in App Store Connect.

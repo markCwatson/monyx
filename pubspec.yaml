@@ -1,7 +1,7 @@
 name: monyx
 description: 'Offline hunting map + ballistics calculator'
 publish_to: 'none'
-version: 1.0.0+2
+version: 1.0.1+1
 
 environment:
   sdk: ^3.11.3
@@ -20,6 +20,8 @@ dependencies:
   hive: ^2.2.3
   hive_flutter: ^1.1.0
   path_provider: ^2.1.5
+  google_mobile_ads: ^5.3.0
+  in_app_purchase: ^3.2.0
 
 dev_dependencies:
   flutter_test:

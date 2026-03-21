@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 
 import 'blocs/profile_cubit.dart';
 import 'blocs/solution_cubit.dart';
+import 'blocs/subscription_cubit.dart';
 import 'config.dart';
 import 'screens/map_screen.dart';
 import 'services/elevation_service.dart';
 import 'services/profile_service.dart';
+import 'services/subscription_service.dart';
 import 'services/weather_service.dart';
 
 void main() async {
@@ -17,14 +20,22 @@ void main() async {
   // Init Hive
   await Hive.initFlutter();
 
+  // Init Mobile Ads SDK
+  await MobileAds.instance.initialize();
+
+  // Init subscription service
+  final subscriptionService = SubscriptionService();
+  await subscriptionService.init();
+
   // Init Mapbox access token
   MapboxOptions.setAccessToken(AppConfig.mapboxPublicToken);
 
-  runApp(const MonyxApp());
+  runApp(MonyxApp(subscriptionService: subscriptionService));
 }
 
 class MonyxApp extends StatelessWidget {
-  const MonyxApp({super.key});
+  final SubscriptionService subscriptionService;
+  const MonyxApp({super.key, required this.subscriptionService});
 
   @override
   Widget build(BuildContext context) {
@@ -36,6 +47,9 @@ class MonyxApp extends StatelessWidget {
             weatherService: WeatherService(),
             elevationService: ElevationService(),
           ),
+        ),
+        BlocProvider(
+          create: (_) => SubscriptionCubit(subscriptionService)..load(),
         ),
       ],
       child: MaterialApp(
