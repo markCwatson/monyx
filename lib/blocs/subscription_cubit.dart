@@ -84,7 +84,10 @@ class SubscriptionCubit extends Cubit<SubscriptionState> {
     }
   }
 
-  bool get isPro => true; // DEMO BUILD: always Pro
+  // todo: to disable pro rerquirement for testing, uncomment this:
+  // bool get isPro => true;
+  // for the real app
+  bool get isPro => state is SubscriptionPro;
 
   @override
   Future<void> close() {

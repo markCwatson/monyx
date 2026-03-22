@@ -1,3 +1,6 @@
+import 'dart:ffi';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
@@ -23,6 +26,14 @@ import 'services/weather_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Pre-load TensorFlowLiteC so FFI symbol lookup works in release builds.
+  // On debug/simulator the symbols are already available, so this may fail.
+  if (Platform.isIOS) {
+    try {
+      DynamicLibrary.open('TensorFlowLiteC.framework/TensorFlowLiteC');
+    } catch (_) {}
+  }
 
   // Init Hive
   await Hive.initFlutter();
