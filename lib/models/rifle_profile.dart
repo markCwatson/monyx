@@ -31,17 +31,17 @@ class RifleProfile extends Equatable {
 
   /// Sensible default: .308 Win 175gr SMK
   factory RifleProfile.default308() => const RifleProfile(
-    name: '.308 Win 175gr SMK',
+    name: 'Tikka T3X Varmint - Federal 175 Matchking',
     caliber: '.308 Win',
     barrelLengthInches: 24,
-    twistRateInches: 10,
-    sightHeightInches: 1.5,
+    twistRateInches: 11,
+    sightHeightInches: 1.75,
     zeroDistanceYards: 100,
     clickValueMoa: 0.25,
-    muzzleVelocityFps: 2650,
+    muzzleVelocityFps: 2642,
     bulletWeightGrains: 175,
-    ballisticCoefficient: 0.505,
-    dragModel: DragModel.g1,
+    ballisticCoefficient: 0.224,
+    dragModel: DragModel.g7,
   );
 
   Map<String, dynamic> toJson() => {
