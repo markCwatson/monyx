@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:math' show pi;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -10,6 +12,7 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart'
     hide Size, ImageSource;
+import 'package:url_launcher/url_launcher.dart';
 
 import '../blocs/profile_cubit.dart';
 import '../blocs/solution_cubit.dart';
@@ -20,14 +23,23 @@ import '../models/plant_result.dart';
 import '../models/poi.dart';
 import '../models/shot_solution.dart';
 import '../models/track_result.dart';
+import '../models/weather_data.dart';
+import '../ballistics/conversions.dart';
+import '../models/weather_profile.dart';
+import '../models/wind_data.dart';
 import '../services/ad_service.dart';
 import '../services/poi_service.dart';
+import '../services/weather_profile_service.dart';
+import '../services/weather_service.dart';
+import '../widgets/bullet_arc_overlay.dart';
 import '../widgets/compass_overlay.dart';
 import '../widgets/solution_card.dart';
+import '../widgets/wind_overlay.dart';
 import 'plant_result_screen.dart';
 import 'profile_list_screen.dart';
 import 'saved_plants_screen.dart';
 import 'saved_tracks_screen.dart';
+import 'saved_weather_screen.dart';
 import 'track_result_screen.dart';
 
 class MapScreen extends StatefulWidget {
@@ -47,6 +59,8 @@ class _MapScreenState extends State<MapScreen> {
   bool _locationReady = false;
   final Map<String, ShotSolution> _lineSolutions = {};
   final Map<String, _AnnotationGroup> _annotationGroups = {};
+  final Map<String, ({double sLat, double sLon, double tLat, double tLon})>
+  _lineEndpoints = {};
   BannerAd? _bannerAd;
   StreamSubscription<SubscriptionState>? _subSub;
   bool _compassEnabled = false;
@@ -58,7 +72,23 @@ class _MapScreenState extends State<MapScreen> {
   StreamSubscription<geo.Position>? _positionSub;
   PointAnnotationManager? _poiManager;
   final PoiService _poiService = PoiService();
+  final WeatherProfileService _weatherProfileService = WeatherProfileService();
   final Map<String, Poi> _poiAnnotations = {};
+  bool _windEnabled = false;
+  bool _windLoading = false;
+  bool _windManual =
+      false; // true when wind was entered manually (no animation)
+  WindField? _windField;
+  double _windBearingDeg = 0;
+  double _windSpeedMph = 0;
+  double? _manualTempF;
+  double? _manualPressureInHg;
+  double? _manualHumidity;
+  double _mapBearing = 0;
+  double _mapZoom = 14;
+  bool _lineTapped = false; // suppress POI picker when a line is tapped
+  bool _windPickLocation = false; // true while user is tapping a wind location
+  DateTime? _windForecastTime; // non-null when "Later" flow is active
 
   @override
   void initState() {
@@ -191,6 +221,7 @@ class _MapScreenState extends State<MapScreen> {
   void _updateMapBearing() {
     if (!_compassEnabled || _heading == null || _mapboxMap == null) return;
     _mapboxMap!.setCamera(CameraOptions(bearing: _heading!));
+    if (_windEnabled) _syncCamera();
   }
 
   void _onMapCreated(MapboxMap map) async {
@@ -221,6 +252,7 @@ class _MapScreenState extends State<MapScreen> {
     _lineManager?.tapEvents(
       onTap: (annotation) {
         if (!mounted) return;
+        _lineTapped = true;
         final solution = _lineSolutions[annotation.id];
         if (solution != null) {
           context.read<SolutionCubit>().show(solution, lineId: annotation.id);
@@ -404,7 +436,7 @@ class _MapScreenState extends State<MapScreen> {
           coordinates: [Position(_userLon!, _userLat!), Position(lon, lat)],
         ),
         lineColor: Colors.red.toARGB32(),
-        lineWidth: 3.0,
+        lineWidth: 6.0,
       ),
     );
 
@@ -414,6 +446,11 @@ class _MapScreenState extends State<MapScreen> {
     // The Cubit fetches weather, runs the solver, and calls
     // emit(SolutionReady(solution)). The UI sees the new state and
     // shows the solution card.
+    final isPro = context.read<SubscriptionCubit>().isPro;
+    final hasManualWeather =
+        _manualTempF != null ||
+        _manualPressureInHg != null ||
+        _manualHumidity != null;
     cubit.compute(
       profile: profileState.profile,
       shooterLat: _userLat!,
@@ -421,6 +458,19 @@ class _MapScreenState extends State<MapScreen> {
       targetLat: lat,
       targetLon: lon,
       lineId: line?.id,
+      windSpeedMph: _windEnabled ? _windSpeedMph : 0,
+      windDirectionDeg: _windEnabled ? _windBearingDeg : 0,
+      skipWeatherApi: !isPro,
+      manualWeather: (!isPro && hasManualWeather)
+          ? WeatherData(
+              temperatureF: _manualTempF ?? 59.0,
+              pressureInHg: _manualPressureInHg ?? 29.92,
+              humidityPercent: _manualHumidity ?? 50.0,
+              windSpeedMph: _windEnabled ? _windSpeedMph : 0,
+              windDirectionDeg: _windEnabled ? _windBearingDeg : 0,
+              source: WeatherSource.estimated,
+            )
+          : null,
     );
 
     // Map the result to this line when it arrives
@@ -453,6 +503,12 @@ class _MapScreenState extends State<MapScreen> {
                   pin: pin,
                   label: labelAnnotation,
                 );
+                _lineEndpoints[line.id] = (
+                  sLat: _userLat!,
+                  sLon: _userLon!,
+                  tLat: lat,
+                  tLon: lon,
+                );
               });
           sub.cancel();
         } else if (state is SolutionError) {
@@ -463,9 +519,22 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _onMapTap(MapContentGestureContext gesture) {
+    // Skip POI picker if a line annotation was just tapped
+    if (_lineTapped) {
+      _lineTapped = false;
+      return;
+    }
+
     final point = gesture.point;
     final lat = point.coordinates.lat.toDouble();
     final lon = point.coordinates.lng.toDouble();
+
+    // Intercept tap for wind location picking
+    if (_windPickLocation) {
+      _handleWindLocationPick(lat, lon);
+      return;
+    }
+
     _showPoiTypePicker(lat, lon);
   }
 
@@ -519,63 +588,213 @@ class _MapScreenState extends State<MapScreen> {
         tileColor: Colors.grey[800],
         onTap: () {
           Navigator.pop(ctx);
-          if (type == PoiType.custom) {
-            _showCustomPinNameDialog(lat, lon);
-          } else {
-            _dropPoiPin(type, lat, lon);
-          }
+          _showPoiMetadataForm(type, lat, lon);
         },
       ),
     );
   }
 
-  void _showCustomPinNameDialog(double lat, double lon) {
-    final controller = TextEditingController();
-    showDialog(
+  /// Shows a form to enter notes and optionally attach a photo before
+  /// dropping the pin.
+  void _showPoiMetadataForm(PoiType type, double lat, double lon) {
+    final noteCtrl = TextEditingController();
+    String? pickedPhotoPath;
+
+    showModalBottomSheet(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: Colors.grey[850],
-        title: const Text('Custom Pin', style: TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: 'Enter pin name',
-            hintStyle: const TextStyle(color: Colors.white38),
-            enabledBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.grey[600]!),
+      backgroundColor: Colors.grey[900],
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          return Padding(
+            padding: EdgeInsets.only(
+              left: 24,
+              right: 24,
+              top: 24,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
             ),
-            focusedBorder: const UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.orangeAccent),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Icon(_poiIcon(type), color: _poiColor(type), size: 28),
+                      const SizedBox(width: 12),
+                      Text(
+                        type.label,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: noteCtrl,
+                    maxLines: 3,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      hintText: 'Add notes (optional)',
+                      hintStyle: const TextStyle(color: Colors.white38),
+                      filled: true,
+                      fillColor: Colors.grey[800],
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  // Photo preview or add button
+                  if (pickedPhotoPath != null)
+                    Stack(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.file(
+                            File(pickedPhotoPath!),
+                            height: 180,
+                            width: double.infinity,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        Positioned(
+                          top: 4,
+                          right: 4,
+                          child: GestureDetector(
+                            onTap: () =>
+                                setSheetState(() => pickedPhotoPath = null),
+                            child: Container(
+                              decoration: const BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                              ),
+                              padding: const EdgeInsets.all(4),
+                              child: const Icon(
+                                Icons.close,
+                                color: Colors.white,
+                                size: 20,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    )
+                  else
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white70,
+                        side: BorderSide(color: Colors.grey[600]!),
+                        minimumSize: const Size(double.infinity, 48),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      icon: const Icon(Icons.camera_alt),
+                      label: const Text('Add Photo'),
+                      onPressed: () async {
+                        final source = await _pickImageSource(ctx);
+                        if (source == null) return;
+                        final xFile = await ImagePicker().pickImage(
+                          source: source,
+                          maxWidth: 1920,
+                          imageQuality: 85,
+                        );
+                        if (xFile != null) {
+                          setSheetState(() => pickedPhotoPath = xFile.path);
+                        }
+                      },
+                    ),
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white54,
+                            side: BorderSide(color: Colors.grey[700]!),
+                            minimumSize: const Size(0, 48),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('Cancel'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.orangeAccent,
+                            foregroundColor: Colors.black,
+                            minimumSize: const Size(0, 48),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          onPressed: () {
+                            Navigator.pop(ctx);
+                            _dropPoiPin(
+                              type,
+                              lat,
+                              lon,
+                              note: noteCtrl.text.trim().isNotEmpty
+                                  ? noteCtrl.text.trim()
+                                  : null,
+                              tempPhotoPath: pickedPhotoPath,
+                            );
+                          },
+                          child: const Text('Drop Pin'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// Let the user choose camera or gallery.
+  Future<ImageSource?> _pickImageSource(BuildContext ctx) async {
+    return showModalBottomSheet<ImageSource>(
+      context: ctx,
+      backgroundColor: Colors.grey[850],
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (c) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt, color: Colors.white),
+              title: const Text(
+                'Camera',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () => Navigator.pop(c, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library, color: Colors.white),
+              title: const Text(
+                'Gallery',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () => Navigator.pop(c, ImageSource.gallery),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Colors.white54),
-            ),
-          ),
-          TextButton(
-            onPressed: () {
-              final name = controller.text.trim();
-              Navigator.pop(ctx);
-              _dropPoiPin(
-                PoiType.custom,
-                lat,
-                lon,
-                note: name.isNotEmpty ? name : null,
-              );
-            },
-            child: const Text(
-              'Drop Pin',
-              style: TextStyle(color: Colors.orangeAccent),
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -585,14 +804,24 @@ class _MapScreenState extends State<MapScreen> {
     double lat,
     double lon, {
     String? note,
+    String? tempPhotoPath,
   }) async {
+    final id = DateTime.now().millisecondsSinceEpoch.toString();
+
+    // Copy photo to permanent storage if provided
+    String? photoPath;
+    if (tempPhotoPath != null) {
+      photoPath = await _poiService.savePhoto(tempPhotoPath, id);
+    }
+
     final poi = Poi(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      id: id,
       type: type,
       latitude: lat,
       longitude: lon,
       timestamp: DateTime.now(),
       note: note,
+      photoPath: photoPath,
     );
 
     await _poiService.save(poi);
@@ -635,62 +864,294 @@ class _MapScreenState extends State<MapScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
+      isScrollControlled: true,
       builder: (ctx) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(_poiIcon(poi.type), color: _poiColor(poi.type), size: 40),
-              const SizedBox(height: 12),
-              Text(
-                poi.note ?? poi.type.label,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Header
+                Row(
+                  children: [
+                    Icon(
+                      _poiIcon(poi.type),
+                      color: _poiColor(poi.type),
+                      size: 32,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            poi.note ?? poi.type.label,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          if (poi.note != null)
+                            Text(
+                              poi.type.label,
+                              style: const TextStyle(
+                                color: Colors.white54,
+                                fontSize: 14,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-              if (poi.note != null) ...[
-                const SizedBox(height: 2),
-                Text(
-                  poi.type.label,
-                  style: const TextStyle(color: Colors.white54, fontSize: 14),
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '${poi.latitude.toStringAsFixed(5)}, ${poi.longitude.toStringAsFixed(5)}',
+                    style: const TextStyle(color: Colors.white54, fontSize: 13),
+                  ),
                 ),
-              ],
-              const SizedBox(height: 4),
-              Text(
-                '${poi.latitude.toStringAsFixed(5)}, ${poi.longitude.toStringAsFixed(5)}',
-                style: const TextStyle(color: Colors.white54, fontSize: 13),
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red[700],
-                  foregroundColor: Colors.white,
-                  minimumSize: const Size(double.infinity, 48),
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    _formatTimestamp(poi.timestamp),
+                    style: const TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
                 ),
-                icon: const Icon(Icons.delete),
-                label: const Text('Delete Pin'),
-                onPressed: () async {
-                  Navigator.pop(ctx);
-                  await _poiService.delete(poi.id);
-                  final entry = _poiAnnotations.entries
-                      .where((e) => e.value.id == poi.id)
-                      .firstOrNull;
-                  if (entry != null) {
-                    // Remove the annotation from the map by its manager ID
+
+                // Photo
+                if (poi.photoPath != null) ...[
+                  const SizedBox(height: 16),
+                  GestureDetector(
+                    onTap: () => _showFullPhoto(poi.photoPath!),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.file(
+                        File(poi.photoPath!),
+                        height: 200,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ),
+                ],
+
+                // Notes
+                if (poi.note != null && poi.note!.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[800],
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      poi.note!,
+                      style: const TextStyle(color: Colors.white, fontSize: 15),
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 20),
+
+                // Action buttons
+                _poiActionButton(
+                  icon: Icons.edit,
+                  label: poi.note != null ? 'Edit Notes' : 'Add Notes',
+                  color: Colors.orangeAccent,
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    final updated = await _editPoiNote(poi);
+                    if (updated != null) {
+                      _refreshPoiAnnotations();
+                    }
+                  },
+                ),
+                const SizedBox(height: 8),
+                _poiActionButton(
+                  icon: Icons.camera_alt,
+                  label: poi.photoPath != null ? 'Change Photo' : 'Add Photo',
+                  color: Colors.lightBlue,
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await _addPoiPhoto(poi);
+                  },
+                ),
+                const SizedBox(height: 8),
+                _poiActionButton(
+                  icon: Icons.directions,
+                  label: 'Get Directions',
+                  color: Colors.green,
+                  onTap: () {
+                    _openDirections(poi.latitude, poi.longitude);
+                  },
+                ),
+                const SizedBox(height: 8),
+                _poiActionButton(
+                  icon: Icons.delete,
+                  label: 'Delete Pin',
+                  color: Colors.red,
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await _poiService.delete(poi.id);
                     _poiManager?.deleteAll();
                     _poiAnnotations.clear();
                     await _loadSavedPois();
-                  }
-                },
-              ),
-            ],
+                  },
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+
+  Widget _poiActionButton({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return SizedBox(
+      width: double.infinity,
+      height: 48,
+      child: ElevatedButton.icon(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: color.withValues(alpha: 0.15),
+          foregroundColor: color,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(color: color.withValues(alpha: 0.3)),
+          ),
+        ),
+        icon: Icon(icon, size: 20),
+        label: Text(label),
+        onPressed: onTap,
+      ),
+    );
+  }
+
+  Future<Poi?> _editPoiNote(Poi poi) async {
+    final controller = TextEditingController(text: poi.note ?? '');
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.grey[850],
+        title: const Text('Edit Notes', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: 4,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: 'Enter notes',
+            hintStyle: const TextStyle(color: Colors.white38),
+            filled: true,
+            fillColor: Colors.grey[800],
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Colors.white54),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text(
+              'Save',
+              style: TextStyle(color: Colors.orangeAccent),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (result == null) return null;
+    final updated = poi.copyWith(note: result.isNotEmpty ? result : null);
+    await _poiService.update(updated);
+    return updated;
+  }
+
+  Future<void> _addPoiPhoto(Poi poi) async {
+    final source = await _pickImageSource(context);
+    if (source == null) return;
+    final xFile = await ImagePicker().pickImage(
+      source: source,
+      maxWidth: 1920,
+      imageQuality: 85,
+    );
+    if (xFile == null) return;
+
+    // Delete old photo if replacing
+    if (poi.photoPath != null) {
+      await _poiService.deletePhoto(poi.photoPath);
+    }
+
+    final photoPath = await _poiService.savePhoto(xFile.path, poi.id);
+    final updated = poi.copyWith(photoPath: photoPath);
+    await _poiService.update(updated);
+    _refreshPoiAnnotations();
+  }
+
+  void _refreshPoiAnnotations() {
+    _poiManager?.deleteAll();
+    _poiAnnotations.clear();
+    _loadSavedPois();
+  }
+
+  void _openDirections(double lat, double lon) {
+    // Try Apple Maps on iOS, falls back to Google Maps
+    final appleMapsUrl = Uri.parse(
+      'https://maps.apple.com/?daddr=$lat,$lon&dirflg=d',
+    );
+    final googleMapsUrl = Uri.parse(
+      'https://www.google.com/maps/dir/?api=1&destination=$lat,$lon&travelmode=driving',
+    );
+
+    launchUrl(appleMapsUrl, mode: LaunchMode.externalApplication).catchError(
+      (_) => launchUrl(googleMapsUrl, mode: LaunchMode.externalApplication),
+    );
+  }
+
+  void _showFullPhoto(String photoPath) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(
+            backgroundColor: Colors.transparent,
+            iconTheme: const IconThemeData(color: Colors.white),
+          ),
+          body: Center(
+            child: InteractiveViewer(child: Image.file(File(photoPath))),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _formatTimestamp(DateTime dt) {
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    if (diff.inDays == 0) {
+      return 'Today ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    } else if (diff.inDays == 1) {
+      return 'Yesterday ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    }
+    return '${dt.month}/${dt.day}/${dt.year}';
   }
 
   IconData _poiIcon(PoiType type) => switch (type) {
@@ -721,6 +1182,7 @@ class _MapScreenState extends State<MapScreen> {
       _labelManager?.delete(group.label);
     }
     _lineSolutions.remove(lineId);
+    _lineEndpoints.remove(lineId);
     context.read<SolutionCubit>().clear();
   }
 
@@ -761,6 +1223,9 @@ class _MapScreenState extends State<MapScreen> {
                   onMapCreated: _onMapCreated,
                   onTapListener: _onMapTap,
                   onLongTapListener: _onMapLongTap,
+                  onCameraChangeListener: _windEnabled
+                      ? (_) => _syncCamera()
+                      : null,
                 ),
 
                 // Profile indicator (top left) — tappable when profiles exist
@@ -953,6 +1418,127 @@ class _MapScreenState extends State<MapScreen> {
                 if (_compassEnabled && _heading != null)
                   CompassOverlay(heading: _heading!),
 
+                // Wind particle overlay
+                if (_windEnabled && _windField != null)
+                  WindOverlay(
+                    windField: _windField!,
+                    mapBearingDeg: _mapBearing,
+                    zoom: _mapZoom,
+                  ),
+
+                // Bullet arc animation for active solution
+                BlocBuilder<SolutionCubit, SolutionState>(
+                  builder: (context, state) {
+                    if (state is SolutionReady &&
+                        state.lineId != null &&
+                        _mapboxMap != null) {
+                      final ep = _lineEndpoints[state.lineId];
+                      if (ep != null) {
+                        return BulletArcOverlay(
+                          key: ValueKey(state.lineId),
+                          mapboxMap: _mapboxMap!,
+                          shooterLat: ep.sLat,
+                          shooterLon: ep.sLon,
+                          targetLat: ep.tLat,
+                          targetLon: ep.tLon,
+                          crosswindMph: state.solution.crosswindMph,
+                          rangeYards: state.solution.rangeYards,
+                        );
+                      }
+                    }
+                    return const SizedBox.shrink();
+                  },
+                ),
+
+                // Location-pick mode banner
+                if (_windPickLocation)
+                  Positioned(
+                    top: MediaQuery.of(context).padding.top + 52,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.orangeAccent,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.pin_drop,
+                              color: Colors.black87,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 6),
+                            const Text(
+                              'Tap a location for wind',
+                              style: TextStyle(
+                                color: Colors.black87,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            GestureDetector(
+                              onTap: () =>
+                                  setState(() => _windPickLocation = false),
+                              child: const Icon(
+                                Icons.close,
+                                color: Colors.black54,
+                                size: 18,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Wind speed badge (top-left, below profile indicator)
+                if (_windEnabled)
+                  Positioned(
+                    top: MediaQuery.of(context).padding.top + 52,
+                    left: 12,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black87,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Transform.rotate(
+                            angle:
+                                ((_windBearingDeg + 180) % 360) * pi / 180 -
+                                pi / 2,
+                            child: const Icon(
+                              Icons.air,
+                              color: Colors.white70,
+                              size: 14,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${_windSpeedMph.round()} mph ${_compassLabel(_windBearingDeg)}'
+                            '${_windManual ? '  ✎' : ''}',
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
                 // Zoom controls + compass + my location (right side)
                 Positioned(
                   right: 12,
@@ -960,6 +1546,8 @@ class _MapScreenState extends State<MapScreen> {
                   child: Column(
                     children: [
                       _compassButton(),
+                      const SizedBox(height: 8),
+                      _windButton(),
                       const SizedBox(height: 8),
                       _mapButton(Icons.my_location, _flyToUser),
                       const SizedBox(height: 8),
@@ -1052,6 +1640,677 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  void _syncCamera() async {
+    if (_mapboxMap == null) return;
+    final cam = await _mapboxMap!.getCameraState();
+    if (!mounted) return;
+    setState(() {
+      _mapBearing = cam.bearing;
+      _mapZoom = cam.zoom;
+    });
+  }
+
+  Future<void> _toggleWind() async {
+    if (_windEnabled) {
+      setState(() {
+        _windEnabled = false;
+        _windField = null;
+        _windManual = false;
+        _windForecastTime = null;
+      });
+      return;
+    }
+    _showWindSheet();
+  }
+
+  /// Compass cardinal/intercardinal label for a meteorological bearing.
+  static String _compassLabel(double deg) => WeatherProfile.compassLabel(deg);
+
+  /// Bottom sheet: Manual entry (free) / Now / Later / Saved (Pro).
+  void _showWindSheet() {
+    final isPro = context.read<SubscriptionCubit>().isPro;
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.grey[900],
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(bottom: 12),
+                child: Text(
+                  'Wind',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+              // --- Free: manual entry ---
+              ListTile(
+                leading: const Icon(Icons.edit, color: Colors.orangeAccent),
+                title: const Text(
+                  'Enter Manually',
+                  style: TextStyle(color: Colors.white),
+                ),
+                subtitle: const Text(
+                  'Type wind speed & direction for ballistics',
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showManualWindEntry();
+                },
+              ),
+              const Divider(color: Colors.white24),
+              // --- Pro: live weather + animation ---
+              _proListTile(
+                isPro: isPro,
+                icon: Icons.my_location,
+                title: 'Now — Current Location',
+                subtitle: 'Live wind + animation at your GPS position',
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _fetchWindNow(useGps: true);
+                },
+                ctx: ctx,
+              ),
+              _proListTile(
+                isPro: isPro,
+                icon: Icons.pin_drop,
+                title: 'Now — Pick Location',
+                subtitle: 'Tap a spot on the map',
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _startLocationPick(forecastTime: null);
+                },
+                ctx: ctx,
+              ),
+              _proListTile(
+                isPro: isPro,
+                icon: Icons.schedule,
+                title: 'Later — Pick Time & Location',
+                subtitle: 'Forecast wind at a future time',
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickForecastDateTime();
+                },
+                ctx: ctx,
+              ),
+              const Divider(color: Colors.white24),
+              _proListTile(
+                isPro: isPro,
+                icon: Icons.bookmark,
+                title: 'Saved Profiles',
+                subtitle: 'View, apply or delete saved weather',
+                trailing: const Icon(
+                  Icons.chevron_right,
+                  color: Colors.white38,
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openSavedWeather();
+                },
+                ctx: ctx,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// A ListTile that is either active (Pro) or shows a lock (free).
+  Widget _proListTile({
+    required bool isPro,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+    required BuildContext ctx,
+    Widget? trailing,
+  }) {
+    return ListTile(
+      leading: Icon(icon, color: isPro ? Colors.orangeAccent : Colors.white24),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: TextStyle(color: isPro ? Colors.white : Colors.white38),
+            ),
+          ),
+          if (!isPro) const Icon(Icons.lock, color: Colors.white24, size: 14),
+        ],
+      ),
+      subtitle: Text(
+        subtitle,
+        style: TextStyle(
+          color: isPro ? Colors.white54 : Colors.white24,
+          fontSize: 12,
+        ),
+      ),
+      trailing: trailing,
+      onTap: isPro
+          ? onTap
+          : () {
+              Navigator.pop(ctx);
+              _showUpgradeSheet(context);
+            },
+    );
+  }
+
+  /// Manual wind & weather entry dialog (available to all users).
+  void _showManualWindEntry() {
+    double speed = _windEnabled ? _windSpeedMph : 0;
+    double direction = _windEnabled ? _windBearingDeg : 0;
+    final speedController = TextEditingController(
+      text: speed > 0 ? speed.round().toString() : '',
+    );
+    final dirController = TextEditingController(
+      text: direction > 0 ? direction.round().toString() : '',
+    );
+    final tempController = TextEditingController(
+      text: _manualTempF != null ? _manualTempF!.round().toString() : '',
+    );
+    final pressureController = TextEditingController(
+      text: _manualPressureInHg != null
+          ? _manualPressureInHg!.toStringAsFixed(2)
+          : '',
+    );
+    final humidityController = TextEditingController(
+      text: _manualHumidity != null ? _manualHumidity!.round().toString() : '',
+    );
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        String? selectedCardinal;
+        bool showWeather =
+            _manualTempF != null ||
+            _manualPressureInHg != null ||
+            _manualHumidity != null;
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            backgroundColor: Colors.grey[850],
+            title: const Text(
+              'Enter Conditions',
+              style: TextStyle(color: Colors.white),
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: speedController,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Wind Speed (mph)',
+                      labelStyle: TextStyle(color: Colors.white54),
+                      enabledBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white24),
+                      ),
+                      focusedBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.orangeAccent),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: dirController,
+                    keyboardType: TextInputType.number,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Wind FROM direction (0–360°)',
+                      labelStyle: TextStyle(color: Colors.white54),
+                      enabledBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white24),
+                      ),
+                      focusedBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.orangeAccent),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      for (final entry in {
+                        'N': 0.0,
+                        'NE': 45.0,
+                        'E': 90.0,
+                        'SE': 135.0,
+                        'S': 180.0,
+                        'SW': 225.0,
+                        'W': 270.0,
+                        'NW': 315.0,
+                      }.entries)
+                        ChoiceChip(
+                          label: Text(entry.key),
+                          selected: selectedCardinal == entry.key,
+                          selectedColor: Colors.orangeAccent,
+                          backgroundColor: Colors.grey[700],
+                          labelStyle: TextStyle(
+                            color: selectedCardinal == entry.key
+                                ? Colors.black
+                                : Colors.white70,
+                            fontSize: 12,
+                          ),
+                          onSelected: (_) {
+                            setDialogState(() {
+                              selectedCardinal = entry.key;
+                              dirController.text = entry.value
+                                  .round()
+                                  .toString();
+                            });
+                          },
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  GestureDetector(
+                    onTap: () =>
+                        setDialogState(() => showWeather = !showWeather),
+                    child: Row(
+                      children: [
+                        Icon(
+                          showWeather ? Icons.expand_less : Icons.expand_more,
+                          color: Colors.white54,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 4),
+                        const Text(
+                          'Weather Conditions',
+                          style: TextStyle(color: Colors.white54, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (showWeather) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: tempController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                        signed: true,
+                      ),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(
+                        labelText: 'Temperature (°F)',
+                        hintText: '59',
+                        hintStyle: TextStyle(color: Colors.white24),
+                        labelStyle: TextStyle(color: Colors.white54),
+                        enabledBorder: UnderlineInputBorder(
+                          borderSide: BorderSide(color: Colors.white24),
+                        ),
+                        focusedBorder: UnderlineInputBorder(
+                          borderSide: BorderSide(color: Colors.orangeAccent),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: pressureController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(
+                        labelText: 'Pressure (inHg)',
+                        hintText: '29.92',
+                        hintStyle: TextStyle(color: Colors.white24),
+                        labelStyle: TextStyle(color: Colors.white54),
+                        enabledBorder: UnderlineInputBorder(
+                          borderSide: BorderSide(color: Colors.white24),
+                        ),
+                        focusedBorder: UnderlineInputBorder(
+                          borderSide: BorderSide(color: Colors.orangeAccent),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: humidityController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(
+                        labelText: 'Humidity (%)',
+                        hintText: '50',
+                        hintStyle: TextStyle(color: Colors.white24),
+                        labelStyle: TextStyle(color: Colors.white54),
+                        enabledBorder: UnderlineInputBorder(
+                          borderSide: BorderSide(color: Colors.white24),
+                        ),
+                        focusedBorder: UnderlineInputBorder(
+                          borderSide: BorderSide(color: Colors.orangeAccent),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text(
+                  'Cancel',
+                  style: TextStyle(color: Colors.white54),
+                ),
+              ),
+              TextButton(
+                onPressed: () {
+                  final s = double.tryParse(speedController.text) ?? 0;
+                  final d = double.tryParse(dirController.text) ?? 0;
+                  final t = double.tryParse(tempController.text);
+                  final p = double.tryParse(pressureController.text);
+                  final h = double.tryParse(humidityController.text);
+                  Navigator.pop(ctx);
+                  _applyManualWind(
+                    s,
+                    d % 360,
+                    tempF: t,
+                    pressureInHg: p,
+                    humidity: h,
+                  );
+                },
+                child: const Text(
+                  'Apply',
+                  style: TextStyle(color: Colors.orangeAccent),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// Apply manually entered wind & weather (no animation).
+  void _applyManualWind(
+    double speedMph,
+    double directionDeg, {
+    double? tempF,
+    double? pressureInHg,
+    double? humidity,
+  }) {
+    setState(() {
+      _windSpeedMph = speedMph;
+      _windBearingDeg = directionDeg;
+      _windEnabled = true;
+      _windManual = true;
+      _windField = null; // no animation for manual entry
+      _manualTempF = tempF;
+      _manualPressureInHg = pressureInHg;
+      _manualHumidity = humidity;
+    });
+  }
+
+  /// "Now — Current Location" flow: fetch weather at GPS position.
+  Future<void> _fetchWindNow({
+    required bool useGps,
+    double? lat,
+    double? lon,
+  }) async {
+    if (!context.read<SubscriptionCubit>().isPro) return;
+    final targetLat = useGps ? _userLat : lat;
+    final targetLon = useGps ? _userLon : lon;
+
+    if (targetLat == null || targetLon == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Waiting for GPS location...'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _windLoading = true);
+    try {
+      final weather = await WeatherService().fetchWeather(targetLat, targetLon);
+      if (!mounted) return;
+
+      final speedKmh = mphToKmh(weather.windSpeedMph);
+      setState(() {
+        _windSpeedMph = weather.windSpeedMph;
+        _windBearingDeg = weather.windDirectionDeg;
+        _windField = UniformWindField(
+          WindVector(speedKmh: speedKmh, bearingDeg: weather.windDirectionDeg),
+        );
+        _windEnabled = true;
+        _windLoading = false;
+        _windForecastTime = null;
+      });
+      _syncCamera();
+      // Auto-save as a profile
+      _autoSaveProfile(
+        targetLat,
+        targetLon,
+        weather.windSpeedMph,
+        weather.windDirectionDeg,
+        DateTime.now(),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _windLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not fetch wind data'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  /// Fetch forecast wind for "Later" flow.
+  Future<void> _fetchWindForecast(
+    double lat,
+    double lon,
+    DateTime targetUtc,
+  ) async {
+    if (!context.read<SubscriptionCubit>().isPro) return;
+    setState(() => _windLoading = true);
+    try {
+      final result = await WeatherService().fetchWindForecast(
+        lat,
+        lon,
+        targetUtc,
+      );
+      if (!mounted) return;
+      if (result == null) throw Exception('forecast unavailable');
+
+      final speedKmh = mphToKmh(result.speedMph);
+      setState(() {
+        _windSpeedMph = result.speedMph;
+        _windBearingDeg = result.directionDeg;
+        _windField = UniformWindField(
+          WindVector(speedKmh: speedKmh, bearingDeg: result.directionDeg),
+        );
+        _windEnabled = true;
+        _windLoading = false;
+        _windForecastTime = targetUtc;
+      });
+      _syncCamera();
+      _autoSaveProfile(
+        lat,
+        lon,
+        result.speedMph,
+        result.directionDeg,
+        targetUtc,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _windLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not fetch forecast wind data'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  /// Apply a saved weather profile directly (offline).
+  void _applyWindProfile(WeatherProfile p) {
+    final speedKmh = mphToKmh(p.windSpeedMph);
+    setState(() {
+      _windSpeedMph = p.windSpeedMph;
+      _windBearingDeg = p.windDirectionDeg;
+      _windField = UniformWindField(
+        WindVector(speedKmh: speedKmh, bearingDeg: p.windDirectionDeg),
+      );
+      _windEnabled = true;
+      _windForecastTime = null;
+    });
+    _syncCamera();
+  }
+
+  /// Auto-save the current wind fetch as a WeatherProfile.
+  Future<void> _autoSaveProfile(
+    double lat,
+    double lon,
+    double speedMph,
+    double dirDeg,
+    DateTime target,
+  ) async {
+    final label =
+        '${_compassLabel(dirDeg)} ${speedMph.round()} mph — '
+        '${target.month}/${target.day} ${target.hour}:${target.minute.toString().padLeft(2, '0')}';
+    final profile = WeatherProfile(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      label: label,
+      latitude: lat,
+      longitude: lon,
+      windSpeedMph: speedMph,
+      windDirectionDeg: dirDeg,
+      targetTime: target,
+      fetchedAt: DateTime.now(),
+    );
+    await _weatherProfileService.save(profile);
+  }
+
+  /// Enter "pick location" mode. User taps the map to choose a wind location.
+  void _startLocationPick({DateTime? forecastTime}) {
+    if (!context.read<SubscriptionCubit>().isPro) return;
+    setState(() {
+      _windPickLocation = true;
+      _windForecastTime = forecastTime;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Tap a location on the map'),
+        backgroundColor: Colors.orangeAccent,
+        duration: Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// Handle a map tap when in location-pick mode.
+  void _handleWindLocationPick(double lat, double lon) {
+    setState(() => _windPickLocation = false);
+    if (_windForecastTime != null) {
+      _fetchWindForecast(lat, lon, _windForecastTime!);
+    } else {
+      _fetchWindNow(useGps: false, lat: lat, lon: lon);
+    }
+  }
+
+  /// Pick a future date + time for the "Later" flow.
+  Future<void> _pickForecastDateTime() async {
+    if (!context.read<SubscriptionCubit>().isPro) return;
+    final now = DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      initialDate: now,
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 7)),
+      builder: (ctx, child) => Theme(
+        data: ThemeData.dark().copyWith(
+          colorScheme: const ColorScheme.dark(
+            primary: Colors.orangeAccent,
+            surface: Color(0xFF1E1E1E),
+          ),
+        ),
+        child: child!,
+      ),
+    );
+    if (date == null || !mounted) return;
+
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(now.add(const Duration(hours: 1))),
+      builder: (ctx, child) => Theme(
+        data: ThemeData.dark().copyWith(
+          colorScheme: const ColorScheme.dark(
+            primary: Colors.orangeAccent,
+            surface: Color(0xFF1E1E1E),
+          ),
+        ),
+        child: child!,
+      ),
+    );
+    if (time == null || !mounted) return;
+
+    final target = DateTime(
+      date.year,
+      date.month,
+      date.day,
+      time.hour,
+      time.minute,
+    ).toUtc();
+    _startLocationPick(forecastTime: target);
+  }
+
+  Widget _windButton() {
+    // Wind blows FROM _windBearingDeg; icon should point the direction the
+    // wind is going TOWARDS. Convert geographic bearing to screen rotation:
+    // geographic 0° = north (up), but Transform.rotate 0 = right, so subtract π/2.
+    final towardsDeg = (_windBearingDeg + 180) % 360;
+    final iconAngleRad = _windEnabled ? towardsDeg * pi / 180 - pi / 2 : 0.0;
+
+    return SizedBox(
+      width: 44,
+      height: 44,
+      child: FloatingActionButton(
+        heroTag: 'wind',
+        mini: true,
+        backgroundColor: _windEnabled ? Colors.orangeAccent : Colors.black87,
+        onPressed: _toggleWind,
+        child: _windLoading
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.orangeAccent,
+                ),
+              )
+            : Transform.rotate(
+                angle: iconAngleRad,
+                child: Icon(
+                  Icons.air,
+                  color: _windEnabled ? Colors.black : Colors.white,
+                  size: 20,
+                ),
+              ),
       ),
     );
   }
@@ -1517,6 +2776,15 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  void _openSavedWeather() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) =>
+            SavedWeatherScreen(onApply: (p) => _applyWindProfile(p)),
+      ),
+    );
+  }
+
   void _openSavedPlants(BuildContext context) {
     Navigator.of(
       context,
@@ -1593,6 +2861,24 @@ class _MapScreenState extends State<MapScreen> {
                   color: Colors.white38,
                 ),
                 onTap: () => _openSavedPlants(ctx),
+              ),
+              ListTile(
+                leading: const Icon(Icons.air, color: Colors.blue),
+                title: const Text(
+                  'Weather Profiles',
+                  style: TextStyle(color: Colors.white),
+                ),
+                trailing: const Icon(
+                  Icons.chevron_right,
+                  color: Colors.white38,
+                ),
+                onTap: () {
+                  Navigator.of(
+                    ctx,
+                    rootNavigator: true,
+                  ).popUntil((route) => route is! PopupRoute);
+                  _openSavedWeather();
+                },
               ),
             ],
           ),

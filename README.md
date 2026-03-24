@@ -78,6 +78,45 @@ The solver is validated against pyballistic's reference trajectories:
 
 Tolerances: velocity ±15 fps, drop ±3" (500 yd) / ±10" (1000 yd).
 
+## Wind Overlay
+
+Animated wind particle overlay on the map with manual entry for free users and live weather + animation for Pro.
+
+### Free vs Pro
+
+| Capability | Free | Pro |
+| --- | --- | --- |
+| Manual wind entry (speed + direction) | ✅ | ✅ |
+| Wind used in ballistic calculations | ✅ | ✅ |
+| Wind speed badge on map | ✅ | ✅ |
+| Live wind from Open-Meteo API | — | ✅ |
+| Animated particle overlay (Windy-style) | — | ✅ |
+| Pick location on map | — | ✅ |
+| Forecast wind (date/time picker) | — | ✅ |
+| Saved weather profiles (Hive, offline) | — | ✅ |
+
+### Technical details
+
+| Component | Detail |
+| --- | --- |
+| **Particle system** | ~600 particles at 60fps via `CustomPainter` + `Ticker`, trailing lines with fade envelope |
+| **Weather API** | Open-Meteo current + hourly forecast (wind speed + direction at 10m, free for non-commercial) |
+| **Ballistics integration** | When wind is set (manual or live), `SolutionCubit.compute()` overrides the API weather's wind fields via `WeatherData.withWind()` so the solution card and wind badge always agree |
+| **Offline profiles** | Each live fetch is auto-saved to Hive; dedicated Saved Weather screen for viewing, applying, or deleting |
+
+### Data flow
+
+```
+Wind button tap → _showWindSheet()
+  ├─ Enter Manually (free) → speed + direction dialog → _applyManualWind() → no animation
+  ├─ Now (GPS, Pro) → fetchWeather() → UniformWindField → particles
+  ├─ Now (pick, Pro) → tap map → fetchWeather() → particles
+  ├─ Later (Pro) → date/time picker → tap map → fetchWindForecast() → particles
+  └─ Saved (Pro) → Hive → WeatherProfile → particles (offline)
+
+Ballistics: cubit.compute(..., windSpeedMph, windDirectionDeg) → solver uses overlay/manual wind
+```
+
 ### What the POC deliberately skips
 
 - No backend / no auth / no sync

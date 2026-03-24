@@ -82,5 +82,8 @@ double msToMph(double ms) => ms * 2.23694;
 /// Convert km/h to mph.
 double kmhToMph(double kmh) => kmh * 0.621371;
 
+/// Convert mph to km/h.
+double mphToKmh(double mph) => mph * 1.60934;
+
 double _toRad(double deg) => deg * pi / 180.0;
 double _toDeg(double rad) => rad * 180.0 / pi;

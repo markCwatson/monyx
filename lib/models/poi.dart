@@ -30,6 +30,7 @@ class Poi extends Equatable {
   final double latitude;
   final double longitude;
   final String? note;
+  final String? photoPath;
   final DateTime timestamp;
 
   const Poi({
@@ -39,7 +40,19 @@ class Poi extends Equatable {
     required this.longitude,
     required this.timestamp,
     this.note,
+    this.photoPath,
   });
+
+  Poi copyWith({String? note, String? photoPath, bool clearPhoto = false}) =>
+      Poi(
+        id: id,
+        type: type,
+        latitude: latitude,
+        longitude: longitude,
+        timestamp: timestamp,
+        note: note ?? this.note,
+        photoPath: clearPhoto ? null : (photoPath ?? this.photoPath),
+      );
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -47,6 +60,7 @@ class Poi extends Equatable {
     'latitude': latitude,
     'longitude': longitude,
     'note': note,
+    'photoPath': photoPath,
     'timestamp': timestamp.toIso8601String(),
   };
 
@@ -56,6 +70,7 @@ class Poi extends Equatable {
     latitude: (json['latitude'] as num).toDouble(),
     longitude: (json['longitude'] as num).toDouble(),
     note: json['note'] as String?,
+    photoPath: json['photoPath'] as String?,
     timestamp: DateTime.parse(json['timestamp'] as String),
   );
 

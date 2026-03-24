@@ -54,6 +54,13 @@ class SolutionCubit extends Cubit<SolutionState> {
        super(const SolutionIdle());
 
   /// Compute a shot solution from shooter → target.
+  ///
+  /// If [manualWeather] is provided, it is used directly instead of fetching
+  /// from the weather API (free-tier users or manual entry).
+  ///
+  /// Otherwise, if [skipWeatherApi] is true, standard atmosphere defaults are
+  /// used. Wind overrides via [windSpeedMph]/[windDirectionDeg] are applied
+  /// on top of whatever weather source is used.
   Future<void> compute({
     required RifleProfile profile,
     required double shooterLat,
@@ -61,23 +68,51 @@ class SolutionCubit extends Cubit<SolutionState> {
     required double targetLat,
     required double targetLon,
     String? lineId,
+    double? windSpeedMph,
+    double? windDirectionDeg,
+    bool skipWeatherApi = false,
+    WeatherData? manualWeather,
   }) async {
     emit(const SolutionComputing());
     try {
-      // Fetch weather + elevation in parallel
-      final results = await Future.wait([
-        _weather.fetchWeather(targetLat, targetLon),
-        _elevation.getElevationPairFeet(
-          shooterLat,
-          shooterLon,
-          targetLat,
-          targetLon,
-        ),
-      ]);
+      // Elevation is always needed (free API, not weather-related)
+      final elevFuture = _elevation.getElevationPairFeet(
+        shooterLat,
+        shooterLon,
+        targetLat,
+        targetLon,
+      );
 
-      final weather = results[0] as WeatherData;
-      final elevPair = results[1] as (double, double);
+      WeatherData weather;
+      (double, double) elevPair;
+
+      if (manualWeather != null) {
+        // Manual entry: use the user-provided weather data directly
+        weather = manualWeather;
+        elevPair = await elevFuture;
+      } else if (skipWeatherApi) {
+        // Free tier: use standard atmosphere, no weather API call
+        weather = WeatherData.standard();
+        elevPair = await elevFuture;
+      } else {
+        // Pro tier: fetch live weather in parallel with elevation
+        final results = await Future.wait([
+          _weather.fetchWeather(targetLat, targetLon),
+          elevFuture,
+        ]);
+        weather = results[0] as WeatherData;
+        elevPair = results[1] as (double, double);
+      }
+
       final (shooterElevFt, targetElevFt) = elevPair;
+
+      // Override wind when provided (on top of any weather source)
+      if (windSpeedMph != null && windDirectionDeg != null) {
+        weather = weather.withWind(
+          windSpeedMph: windSpeedMph,
+          windDirectionDeg: windDirectionDeg,
+        );
+      }
 
       // Geometry
       final horizRange = haversineYards(

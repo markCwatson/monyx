@@ -2,6 +2,8 @@ import 'package:equatable/equatable.dart';
 
 enum DragModel { g1, g7 }
 
+// Equatable is critical for the BLoC pattern — the cubit won't re-emit
+//... state if the new value equals the old one.
 class RifleProfile extends Equatable {
   final String name;
   final String caliber;
@@ -44,6 +46,7 @@ class RifleProfile extends Equatable {
     dragModel: DragModel.g7,
   );
 
+  // Hive stores raw JSON, so model must convert to/from Map<String, dynamic>
   Map<String, dynamic> toJson() => {
     'name': name,
     'caliber': caliber,
@@ -72,6 +75,7 @@ class RifleProfile extends Equatable {
     dragModel: DragModel.values.byName(json['dragModel'] as String),
   );
 
+  // tells Equatable which fields to compare
   @override
   List<Object?> get props => [
     name,

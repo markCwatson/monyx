@@ -15,6 +15,9 @@ class ProfileListScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Subscribes to changes:
+    // When SubscriptionCubit emits a new state, this widget rebuilds
+    // Rule of thumb: watch in build(), read in event handlers.
     final isPro = context.watch<SubscriptionCubit>().isPro;
 
     return Scaffold(
@@ -30,6 +33,8 @@ class ProfileListScreen extends StatelessWidget {
           ),
         ],
       ),
+      // Reactive UI with BlocBuilder:
+      // the cubit emits new state with updated list, and BlocBuilder rebuilds.
       body: BlocBuilder<ProfileCubit, ProfileState>(
         builder: (context, state) {
           if (state is! ProfileLoaded) {
@@ -146,10 +151,19 @@ class ProfileListScreen extends StatelessWidget {
   }
 
   void _openEditor(BuildContext context, {RifleProfile? profile, int? index}) {
+    // Flutter's navigation works like a stack. push() adds a new
+    //... screen on top (with a back animation). pop() removes it.
     Navigator.of(context).push(
+      // MaterialPageRoute wraps the destination screen with a platform-appropriate
+      //... transition animation (slide-from-right on iOS, fade-up on Android).
       MaterialPageRoute(
         builder: (_) => MultiBlocProvider(
           providers: [
+            // When you push a new route, it gets a new widget tree branch.
+            // The cubits from MultiBlocProvider in main.dart aren't automatically
+            // ... available in the new route. You must re-provide them using
+            // BlocProvider.value() (which reuses the existing instance rather
+            // ... than creating a new one).
             BlocProvider.value(value: context.read<ProfileCubit>()),
             BlocProvider.value(value: context.read<SubscriptionCubit>()),
           ],
@@ -185,7 +199,7 @@ class ProfileListScreen extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               const Text(
-                'Save unlimited rifle & ammo profiles and remove all ads.',
+                'Save unlimited rifle & ammo profiles, remove all ads, and unlock other premium features!',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.white70),
               ),
@@ -247,7 +261,7 @@ class _UpgradeBanner extends StatelessWidget {
           const SizedBox(width: 8),
           const Expanded(
             child: Text(
-              'Upgrade to Pro for unlimited profiles & no ads',
+              'Upgrade to Pro for unlimited profiles, no ads, and other premium features!',
               style: TextStyle(color: Colors.white70, fontSize: 13),
             ),
           ),

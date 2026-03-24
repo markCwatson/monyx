@@ -4,6 +4,12 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../blocs/profile_cubit.dart';
 import '../models/rifle_profile.dart';
 
+/// The two-class pattern:
+/// Flutter rebuilds widgets frequently, but state needs to persist across
+/// rebuilds. The StatefulWidget is recreated on every rebuild (it's cheap),
+/// but the State object is created once and sticks around. This separation
+/// lets Flutter be efficient while you keep mutable state safe.
+
 class ProfileScreen extends StatefulWidget {
   final RifleProfile? editProfile;
   final int? editIndex;
@@ -16,6 +22,9 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   final _formKey = GlobalKey<FormState>();
 
+  // The controllers are declared late because they're initialized in
+  // initState(), not in the declaration. late tells Dart "I promise this
+  // will have a value before it's used."
   late TextEditingController _name;
   late TextEditingController _caliber;
   late TextEditingController _barrelLength;
@@ -54,6 +63,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   void dispose() {
+    // You must dispose controllers to avoid memory leaks.
     _name.dispose();
     _caliber.dispose();
     _barrelLength.dispose();

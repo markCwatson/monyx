@@ -1,3 +1,6 @@
+// main.dart is purely wiring. It connects services to cubits, cubits to the
+// ... widget tree, and sets the home screen.
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
@@ -22,19 +25,20 @@ import 'services/track_service.dart';
 import 'services/weather_service.dart';
 
 void main() async {
+  // required whenever you call native platform code before runApp()
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Init Hive
+  // Initialization order matters. Hive first (other services may need it),
+  //... then ads, then subscriptions, then Mapbox token
   await Hive.initFlutter();
-
-  // Init Mobile Ads SDK
   await MobileAds.instance.initialize();
 
-  // Init subscription service
+  // The subscription service is created outside the widget tree and passed in
+  //... this is because it needs to start listening to the App Store's purchase
+  //... stream immediately, before any UI exists.
   final subscriptionService = SubscriptionService();
   await subscriptionService.init();
 
-  // Init Mapbox access token
   MapboxOptions.setAccessToken(AppConfig.mapboxPublicToken);
 
   runApp(MonyxApp(subscriptionService: subscriptionService));
@@ -46,8 +50,12 @@ class MonyxApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // every screen in the app can access any of these cubits.
+    // Manual DI (no framework) — Each cubit receives its services as
+    //... constructor arguments. No GetIt, no Riverpod, no service locator.
     return MultiBlocProvider(
       providers: [
+        // note: Each cubit is created lazily (only when first accessed)
         BlocProvider(create: (_) => ProfileCubit(ProfileService())..load()),
         BlocProvider(
           create: (_) => SolutionCubit(

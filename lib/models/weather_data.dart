@@ -31,6 +31,20 @@ class WeatherData extends Equatable {
     source: WeatherSource.estimated,
   );
 
+  /// Return a copy with wind values replaced.
+  WeatherData withWind({
+    required double windSpeedMph,
+    required double windDirectionDeg,
+  }) => WeatherData(
+    temperatureF: temperatureF,
+    humidityPercent: humidityPercent,
+    pressureInHg: pressureInHg,
+    windSpeedMph: windSpeedMph,
+    windDirectionDeg: windDirectionDeg,
+    altitudeFt: altitudeFt,
+    source: source,
+  );
+
   @override
   List<Object?> get props => [
     temperatureF,
