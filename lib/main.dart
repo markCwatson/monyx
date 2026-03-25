@@ -14,7 +14,7 @@ import 'blocs/solution_cubit.dart';
 import 'blocs/subscription_cubit.dart';
 import 'blocs/track_cubit.dart';
 import 'config.dart';
-import 'screens/map_screen.dart';
+import 'screens/map/map_screen.dart';
 import 'services/elevation_service.dart';
 import 'services/hike_track_service.dart';
 import 'services/plant_classifier.dart';
