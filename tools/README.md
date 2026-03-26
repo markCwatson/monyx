@@ -73,7 +73,9 @@ The script downloads the weights from HuggingFace (requires internet), converts 
 | `build_plant_metadata.py`    | Plant classifier — generates species metadata for reranking |
 | `train_plant_classifier.py`  | Plant classifier — trains EfficientNet-Lite0                |
 | `export_plant_classifier.py` | Plant classifier — exports PyTorch → TFLite                 |
+| `build_land_tileset.py`      | Land overlay — downloads, normalizes, and tiles public land |
 | `requirements.txt`           | Pinned Python dependencies for reproducible builds          |
+| `land_requirements.txt`      | Python dependencies for the land overlay pipeline           |
 | `.venv/`                     | Python 3.13 virtual environment (training, gitignored)      |
 | `.export_venv/`              | Python 3.12 virtual environment (export, gitignored)        |
 
@@ -180,3 +182,154 @@ tools/.export_venv/bin/python tools/export_plant_classifier.py
 # 6. (Optional) Delete training data — the model + classes + metadata are all that's needed
 rm -rf data/plants/
 ```
+
+---
+
+# Land Overlay (Public / Crown Land Boundaries)
+
+## Background
+
+Monyx shows a toggleable overlay of **public/Crown land boundaries** on the map, colour-coded by managing agency (federal parks, provincial parks, Crown land, wildlife management areas, etc.). This tells hunters at a glance where they can and cannot hunt — uncoloured areas are private land.
+
+Unlike ML models (which are bundled in the app), the land overlay uses **Mapbox's vector tile infrastructure**. Government geospatial data is converted into a Mapbox vector tileset, uploaded to Mapbox Studio, and served from the Mapbox CDN alongside the satellite/streets base map. This means:
+
+- **No large files bundled in the app binary**
+- **Offline support** via Mapbox TileStore (same as offline map regions)
+- **Updates** by re-running the pipeline and re-uploading — no app update needed
+
+## How it works
+
+```
+Government REST APIs (ArcGIS REST, Socrata SODA)
+  ↓  Python requests — query by province, download as GeoJSON
+  ↓  Python — normalize attributes to unified schema
+  ↓  Merge all sources into single GeoJSON
+  ↓  tippecanoe — generate optimized vector tiles (MBTiles)
+  ↓  Upload to Mapbox Studio as custom tileset
+  ↓  Mapbox CDN serves tiles to the app on demand
+  ↓  Flutter app adds VectorSource + FillLayer + LineLayer
+```
+
+## Data sources
+
+### Canada
+
+| Source | Coverage | URL | Format |
+|--------|----------|-----|--------|
+| **CPCAD** (Canadian Protected & Conserved Areas Database) | All provinces — national/provincial parks, WMAs, conservation areas, ecological reserves | [ArcGIS REST API](https://maps-cartes.ec.gc.ca/arcgis/rest/services/CWS_SCF/CPCAD/MapServer/0) / [Open Canada](https://open.canada.ca/data/en/dataset/6c343726-1e92-451a-876a-76e17d398a1c) | ArcGIS REST → GeoJSON |
+| **NS Crown Land** | Nova Scotia — unprotected Crown land parcels | [Nova Scotia Open Data](https://data.novascotia.ca/Lands-Forests-and-Wildlife/Crown-Land/3nka-59nz) | GeoJSON |
+
+### US (Phase 5 — not yet implemented)
+
+| Source | Coverage | URL | Format |
+|--------|----------|-----|--------|
+| **PAD-US** (Protected Areas Database of the US) | All states — federal, state, local public lands | [USGS Science Data Catalog](https://www.sciencebase.gov/catalog/item/652ef534d34ea70453562141) | GeoPackage |
+
+## Unified schema
+
+Every polygon in the merged GeoJSON has these properties:
+
+| Property | Type | Description | Examples |
+|----------|------|-------------|----------|
+| `country` | string | ISO 2-letter country code | `CA`, `US` |
+| `manager` | string | Normalized manager category (drives colour) | `federal_park`, `crown_land`, `wildlife_mgmt` |
+| `manager_name` | string | Specific agency name | `Parks Canada`, `Nova Scotia DNR`, `BLM` |
+| `name` | string | Area name | `Kejimkujik`, `Cape Breton Highlands` |
+| `province_state` | string | Province/state code | `NS`, `ON`, `MT` |
+| `source` | string | Dataset origin | `cpcad`, `ns_open_data`, `pad_us` |
+
+### Manager categories (colour coding)
+
+| Category | Colour | Typical source |
+|----------|--------|----------------|
+| `federal_park` | Brown #B5651D | Parks Canada, NPS |
+| `provincial_park` | Dark green #2E7D32 | Provincial parks |
+| `crown_land` | Yellow #FBC02D | Provincial Crown land, BLM |
+| `wildlife_mgmt` | Olive #827717 | WMAs, NWAs, migratory bird sanctuaries |
+| `conservation` | Teal #00897B | Ecological reserves, nature reserves |
+| `military` | Red #C62828 | DND, military reserves |
+| `blm` | Yellow #FBC02D | US Bureau of Land Management |
+| `usfs` | Green #388E3C | US Forest Service |
+| `nps` | Brown #B5651D | US National Parks |
+| `state_park` | Dark green #2E7D32 | US state parks/forests |
+
+## Prerequisites
+
+```bash
+# System tools (macOS)
+brew install tippecanoe
+
+# Python dependencies (reuse existing tools venv)
+source tools/.venv/bin/activate
+pip install -r tools/land_requirements.txt
+```
+
+## Run the pipeline
+
+### Proof of concept (Nova Scotia only)
+
+```bash
+# 1. Query CPCAD REST API + download NS Crown Land (~160 MB)
+python tools/build_land_tileset.py download
+
+# 2. Normalize attributes and merge into unified GeoJSON
+python tools/build_land_tileset.py process
+
+# 3. Generate vector tiles (MBTiles)
+python tools/build_land_tileset.py tiles
+
+# Or run all three steps:
+python tools/build_land_tileset.py all
+```
+
+### Output
+
+```
+tools/land_data/output/land_overlay.mbtiles   — vector tileset, upload to Mapbox
+```
+
+### Upload to Mapbox Studio
+
+1. Go to https://studio.mapbox.com/tilesets/
+2. Click **New tileset** → upload `tools/land_data/output/land_overlay.mbtiles`
+3. Wait for processing to complete
+4. Copy the **tileset ID** (shown on the tileset page, e.g. `yourusername.land_overlay`)
+5. Add it to your `.env` file:
+   ```
+   LAND_TILESET_ID=yourusername.land_overlay
+   ```
+6. Run the app with `flutter run --dart-define-from-file=.env`
+
+## Adding more provinces
+
+To expand coverage, add new data sources to `build_land_tileset.py`:
+
+1. **Find the provincial Crown Land dataset** (search `<province> Crown Land open data`)
+2. Add the download URL and a processing function following the NS pattern
+3. The CPCAD REST API already covers protected areas for all provinces — just add the province code to the query:
+   ```python
+   # Province codes in CPCAD_LOC_CODES dict:
+   # AB=1, BC=2, MB=3, NB=4, NL=5, NT=6, NS=7, NU=8, ON=9, PE=10, QC=11, SK=12, YT=13
+   data = _query_cpcad_geojson(requests, "NB")  # query New Brunswick
+   ```
+4. Re-run the pipeline and re-upload the tileset
+
+## Flutter integration
+
+The overlay is implemented in `lib/screens/map/_land_overlay.dart` as an extension on `_MapScreenState` (same pattern as `_hiking.dart`, `_weather.dart`, etc.):
+
+- **VectorSource** → points to the Mapbox tileset (configured via `LAND_TILESET_ID` env var)
+- **FillLayer** → semi-transparent fill, colour-coded by `manager` property
+- **LineLayer** → boundary outlines
+- **Toggle button** → left sidebar, Pro-gated (free users see lock icon)
+- **Filter sheet** → long-press or second tap to show/hide specific agency categories
+
+### Key files
+
+| File | Purpose |
+|------|---------|
+| `lib/screens/map/_land_overlay.dart` | Map overlay mixin (source, layers, UI) |
+| `lib/config.dart` | `AppConfig.landTilesetId` — tileset ID from env |
+| `tools/build_land_tileset.py` | Data pipeline (download → normalize → tiles) |
+| `tools/land_requirements.txt` | Python dependencies for the pipeline |
+| `tools/land_data/` | Working directory for raw/processed data (gitignored) |

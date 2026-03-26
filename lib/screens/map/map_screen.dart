@@ -14,6 +14,7 @@ import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart'
     hide Size, ImageSource;
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../config.dart';
 import '../../blocs/hike_track_cubit.dart';
 import '../../blocs/profile_cubit.dart';
 import '../../blocs/solution_cubit.dart';
@@ -43,6 +44,7 @@ import '../profile_list_screen.dart';
 import '../saved_hike_tracks_screen.dart';
 import '../saved_plants_screen.dart';
 import '../saved_tracks_screen.dart';
+import '../offline_regions_screen.dart';
 import '../saved_weather_screen.dart';
 import '../track_result_screen.dart';
 
@@ -51,6 +53,7 @@ part '_hiking.dart';
 part '_track_id.dart';
 part '_plant_id.dart';
 part '_poi.dart';
+part '_land_overlay.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -99,6 +102,13 @@ class _MapScreenState extends State<MapScreen> {
   bool _lineTapped = false; // suppress POI picker when a line is tapped
   bool _windPickLocation = false; // true while user is tapping a wind location
   DateTime? _windForecastTime; // non-null when "Later" flow is active
+
+  // ── Land overlay state ────────────────────────────────────────────
+  bool _landOverlayEnabled = false;
+  Set<String> _landOverlayFilters = _MapScreenLandOverlay
+      .allManagerCategories
+      .keys
+      .toSet();
 
   // ── Hike tracking state ───────────────────────────────────────────
   bool _hikeTrackLayerReady = false; // true once GeoJSON source + layers exist
@@ -704,6 +714,25 @@ class _MapScreenState extends State<MapScreen> {
                 ),
                 onTap: () => _openSavedTracks(ctx),
               ),
+              const Divider(color: Colors.white24),
+              ListTile(
+                leading: const Icon(Icons.download, color: Colors.white70),
+                title: const Text(
+                  'Offline Maps',
+                  style: TextStyle(color: Colors.white),
+                ),
+                trailing: const Icon(
+                  Icons.chevron_right,
+                  color: Colors.white38,
+                ),
+                onTap: () {
+                  Navigator.of(
+                    ctx,
+                    rootNavigator: true,
+                  ).popUntil((route) => route is! PopupRoute);
+                  _openOfflineRegions();
+                },
+              ),
             ],
           ),
         ),
@@ -828,6 +857,16 @@ class _MapScreenState extends State<MapScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      // Land overlay
+                      Builder(
+                        builder: (context) {
+                          final isPro = context
+                              .watch<SubscriptionCubit>()
+                              .isPro;
+                          return _landOverlayButton(isPro: isPro);
+                        },
+                      ),
+                      const SizedBox(height: 8),
                       // Weather / Wind
                       _windButton(),
                       const SizedBox(height: 8),

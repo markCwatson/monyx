@@ -1,0 +1,10 @@
+# Python dependencies for the land overlay tileset pipeline.
+#
+# Usage:
+#   source tools/.venv/bin/activate
+#   pip install -r tools/land_requirements.txt
+#
+# System dependencies (install separately):
+#   brew install gdal tippecanoe   (macOS)
+
+requests>=2.32          # HTTP downloads

@@ -1,0 +1,4 @@
+# Raw and processed geodata — too large to commit.
+# Regenerate with: python tools/build_land_tileset.py all
+*
+!.gitignore
