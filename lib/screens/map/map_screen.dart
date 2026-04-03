@@ -21,9 +21,14 @@ import '../../blocs/solution_cubit.dart';
 import '../../blocs/subscription_cubit.dart';
 import '../../blocs/plant_cubit.dart';
 import '../../blocs/track_cubit.dart';
+import '../../blocs/shotgun_pattern_cubit.dart';
 import '../../models/hike_track.dart';
+import '../../models/pattern_result.dart';
 import '../../models/plant_result.dart';
 import '../../models/poi.dart';
+import '../../models/rifle_profile.dart';
+import '../../models/shotgun_setup.dart';
+import '../../models/weapon_profile.dart';
 import '../../models/shot_solution.dart';
 import '../../models/track_result.dart';
 import '../../models/weather_data.dart';
@@ -34,11 +39,17 @@ import '../../services/ad_service.dart';
 import '../../services/poi_service.dart';
 import '../../services/weather_profile_service.dart';
 import '../../services/weather_service.dart';
+import '../../ballistics/shotgun_ballistics.dart';
 import '../../widgets/bullet_arc_overlay.dart';
 import '../../widgets/compass_overlay.dart';
+import '../../widgets/lethal_range_overlay.dart';
+import '../../widgets/pattern_card.dart';
+import '../../widgets/pellet_spray_overlay.dart';
 import '../../widgets/solution_card.dart';
+import '../../widgets/spread_cone_overlay.dart';
 import '../../widgets/wind_overlay.dart';
 import '../plant_result_screen.dart';
+import '../pattern_result_screen.dart';
 import '../hike_summary_screen.dart';
 import '../profile_list_screen.dart';
 import '../saved_hike_tracks_screen.dart';
@@ -71,7 +82,10 @@ class _MapScreenState extends State<MapScreen> {
   double? _userLon;
   bool _locationReady = false;
   final Map<String, ShotSolution> _lineSolutions = {};
+  final Map<String, ({PatternResult result, ShotgunSetup setup})>
+  _linePatterns = {};
   final Map<String, _AnnotationGroup> _annotationGroups = {};
+  final Map<String, String> _labelToLine = {}; // label annot ID → line annot ID
   final Map<String, ({double sLat, double sLon, double tLat, double tLon})>
   _lineEndpoints = {};
   BannerAd? _bannerAd;
@@ -123,6 +137,7 @@ class _MapScreenState extends State<MapScreen> {
   // ── Hike tracking state ───────────────────────────────────────────
   bool _hikeTrackLayerReady = false; // true once GeoJSON source + layers exist
   StreamSubscription<HikeTrackState>? _hikeTrackSub;
+  StreamSubscription<ProfileState>? _profileSub;
 
   @override
   void initState() {
@@ -150,6 +165,11 @@ class _MapScreenState extends State<MapScreen> {
           _speed = pos.speed;
           _userLat = pos.latitude;
           _userLon = pos.longitude;
+          // First position from stream → mark ready & fly
+          if (!_locationReady) {
+            setState(() => _locationReady = true);
+            _flyToUser();
+          }
           // Use GPS bearing when moving (speed >= 2 m/s) and bearing is valid
           if (_speed >= 2 && pos.heading >= 0) {
             _gpsHeading = pos.heading;
@@ -170,6 +190,13 @@ class _MapScreenState extends State<MapScreen> {
       if (state is SubscriptionPro && _bannerAd != null) {
         _bannerAd!.dispose();
         if (mounted) setState(() => _bannerAd = null);
+      }
+    });
+    // Adjust zoom when profile loads/changes (shotgun → closer)
+    _profileSub = context.read<ProfileCubit>().stream.listen((state) {
+      if (!mounted || _mapboxMap == null) return;
+      if (state is ProfileLoaded) {
+        _adjustZoomForProfile(state.profile);
       }
     });
     // Listen for hike track state changes to update the path on the map
@@ -201,6 +228,7 @@ class _MapScreenState extends State<MapScreen> {
     _positionSub?.cancel();
     _subSub?.cancel();
     _hikeTrackSub?.cancel();
+    _profileSub?.cancel();
     _bannerAd?.dispose();
     super.dispose();
   }
@@ -244,19 +272,25 @@ class _MapScreenState extends State<MapScreen> {
     }
     if (permission == geo.LocationPermission.deniedForever) return;
 
-    final pos = await geo.Geolocator.getCurrentPosition(
-      locationSettings: const geo.LocationSettings(
-        accuracy: geo.LocationAccuracy.high,
-      ),
-    );
-    if (mounted) {
-      setState(() {
+    // getCurrentPosition can be slow (10+ s on iOS waiting for GPS lock).
+    // The position stream already triggers the initial fly on the first
+    // emission, so we only use this as a fallback for a more accurate fix.
+    try {
+      final pos = await geo.Geolocator.getCurrentPosition(
+        locationSettings: const geo.LocationSettings(
+          accuracy: geo.LocationAccuracy.high,
+        ),
+      );
+      if (mounted) {
         _userLat = pos.latitude;
         _userLon = pos.longitude;
-        _locationReady = true;
-      });
-      // Fly the map to the user's actual location
-      _flyToUser();
+        if (!_locationReady) {
+          setState(() => _locationReady = true);
+          _flyToUser();
+        }
+      }
+    } catch (_) {
+      // Stream-based fallback handles the initial fly.
     }
   }
 
@@ -264,14 +298,33 @@ class _MapScreenState extends State<MapScreen> {
     final lat = _effectiveLat;
     final lon = _effectiveLon;
     if (_mapboxMap == null || lat == null || lon == null) return;
+    final ps = context.read<ProfileCubit>().state;
+    final isShotgun = ps is ProfileLoaded && ps.profile is ShotgunSetup;
     await _mapboxMap!.flyTo(
       CameraOptions(
         center: Point(coordinates: Position(lon, lat)),
-        zoom: 15.0,
+        zoom: isShotgun ? 17.0 : 15.0,
         bearing: _compassEnabled && _heading != null ? _heading! : null,
       ),
       MapAnimationOptions(duration: 1500),
     );
+  }
+
+  /// Adjust zoom when the active profile changes (shotgun needs closer view).
+  Future<void> _adjustZoomForProfile(WeaponProfile profile) async {
+    if (_mapboxMap == null || !_locationReady) return;
+    final cam = await _mapboxMap!.getCameraState();
+    if (profile.weaponType == WeaponType.shotgun && cam.zoom < 16) {
+      await _mapboxMap!.flyTo(
+        CameraOptions(zoom: 17.0),
+        MapAnimationOptions(duration: 600),
+      );
+    } else if (profile.weaponType == WeaponType.rifle && cam.zoom >= 16.5) {
+      await _mapboxMap!.flyTo(
+        CameraOptions(zoom: 15.0),
+        MapAnimationOptions(duration: 600),
+      );
+    }
   }
 
   void _handleMyLocationTap() {
@@ -356,6 +409,32 @@ class _MapScreenState extends State<MapScreen> {
     _annotationManager = await map.annotations.createPointAnnotationManager();
     _lineManager = await map.annotations.createPolylineAnnotationManager();
     _labelManager = await map.annotations.createPointAnnotationManager();
+    _labelManager?.tapEvents(
+      onTap: (annotation) {
+        if (!mounted) return;
+        final lineId = _labelToLine[annotation.id];
+        if (lineId == null) return;
+        _lineTapped = true;
+        final solution = _lineSolutions[lineId];
+        if (solution != null) {
+          context.read<SolutionCubit>().show(solution, lineId: lineId);
+          return;
+        }
+        final pattern = _linePatterns[lineId];
+        final ep = _lineEndpoints[lineId];
+        if (pattern != null && ep != null) {
+          context.read<ShotgunPatternCubit>().show(
+            pattern.result,
+            setup: pattern.setup,
+            shooterLat: ep.sLat,
+            shooterLon: ep.sLon,
+            targetLat: ep.tLat,
+            targetLon: ep.tLon,
+            lineId: lineId,
+          );
+        }
+      },
+    );
     _poiManager = await map.annotations.createPointAnnotationManager();
     _poiManager?.tapEvents(
       onTap: (annotation) {
@@ -371,6 +450,20 @@ class _MapScreenState extends State<MapScreen> {
         final solution = _lineSolutions[annotation.id];
         if (solution != null) {
           context.read<SolutionCubit>().show(solution, lineId: annotation.id);
+          return;
+        }
+        final pattern = _linePatterns[annotation.id];
+        final ep = _lineEndpoints[annotation.id];
+        if (pattern != null && ep != null) {
+          context.read<ShotgunPatternCubit>().show(
+            pattern.result,
+            setup: pattern.setup,
+            shooterLat: ep.sLat,
+            shooterLon: ep.sLon,
+            targetLat: ep.tLat,
+            targetLon: ep.tLon,
+            lineId: annotation.id,
+          );
         }
       },
     );
@@ -473,10 +566,105 @@ class _MapScreenState extends State<MapScreen> {
     if (profileState is! ProfileLoaded) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Create a rifle profile first'),
+          content: Text('Create a profile first'),
           backgroundColor: Colors.orange,
         ),
       );
+      return;
+    }
+
+    // Shotgun profiles → compute pattern, drop pin & line like rifle
+    if (profileState.profile is ShotgunSetup) {
+      final shooterLat = _effectiveLat;
+      final shooterLon = _effectiveLon;
+      if (shooterLat == null || shooterLon == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Waiting for GPS location...'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+      final setup = profileState.profile as ShotgunSetup;
+      final distYds = haversineYards(shooterLat, shooterLon, lat, lon);
+      final cubit = context.read<ShotgunPatternCubit>();
+
+      // Drop pin at target
+      final pin = await _annotationManager?.create(
+        PointAnnotationOptions(
+          geometry: point,
+          iconSize: 1.5,
+          iconImage: 'marker-15',
+        ),
+      );
+
+      // Draw orange line from shooter to target
+      final line = await _lineManager?.create(
+        PolylineAnnotationOptions(
+          geometry: LineString(
+            coordinates: [Position(shooterLon, shooterLat), Position(lon, lat)],
+          ),
+          lineColor: Colors.orangeAccent.toARGB32(),
+          lineWidth: 4.0,
+        ),
+      );
+
+      // Compute pattern
+      cubit.predict(
+        setup: setup,
+        distanceYards: distYds,
+        shooterLat: shooterLat,
+        shooterLon: shooterLon,
+        targetLat: lat,
+        targetLon: lon,
+        lineId: line?.id,
+      );
+
+      // Store results when ready
+      if (line != null) {
+        final midLat = (shooterLat + lat) / 2;
+        final midLon = (shooterLon + lon) / 2;
+        late final StreamSubscription<ShotgunPatternState> sub;
+        sub = cubit.stream.listen((state) {
+          if (state is PatternReady) {
+            _linePatterns[line.id] = (result: state.result, setup: setup);
+            final r = state.result;
+            final label =
+                '${r.distanceYards.round()} yd / ${r.spreadDiameterInches.toStringAsFixed(0)}" spread';
+            _labelManager
+                ?.create(
+                  PointAnnotationOptions(
+                    geometry: Point(coordinates: Position(midLon, midLat)),
+                    textField: label,
+                    textSize: 13,
+                    textColor: Colors.white.toARGB32(),
+                    textHaloColor: Colors.black.toARGB32(),
+                    textHaloWidth: 1.5,
+                    textAnchor: TextAnchor.CENTER,
+                    iconSize: 0,
+                  ),
+                )
+                .then((labelAnnotation) {
+                  _annotationGroups[line.id] = _AnnotationGroup(
+                    line: line,
+                    pin: pin,
+                    label: labelAnnotation,
+                  );
+                  _labelToLine[labelAnnotation.id] = line.id;
+                  _lineEndpoints[line.id] = (
+                    sLat: shooterLat,
+                    sLon: shooterLon,
+                    tLat: lat,
+                    tLon: lon,
+                  );
+                });
+            sub.cancel();
+          } else if (state is PatternError) {
+            sub.cancel();
+          }
+        });
+      }
       return;
     }
 
@@ -522,7 +710,7 @@ class _MapScreenState extends State<MapScreen> {
         _manualPressureInHg != null ||
         _manualHumidity != null;
     cubit.compute(
-      profile: profileState.profile,
+      profile: profileState.profile as RifleProfile,
       shooterLat: shooterLat,
       shooterLon: shooterLon,
       targetLat: lat,
@@ -573,6 +761,7 @@ class _MapScreenState extends State<MapScreen> {
                   pin: pin,
                   label: labelAnnotation,
                 );
+                _labelToLine[labelAnnotation.id] = line.id;
                 _lineEndpoints[line.id] = (
                   sLat: shooterLat,
                   sLon: shooterLon,
@@ -619,27 +808,42 @@ class _MapScreenState extends State<MapScreen> {
     if (group != null) {
       _lineManager?.delete(group.line);
       if (group.pin != null) _annotationManager?.delete(group.pin!);
+      _labelToLine.remove(group.label.id);
       _labelManager?.delete(group.label);
     }
     _lineSolutions.remove(lineId);
+    _linePatterns.remove(lineId);
     _lineEndpoints.remove(lineId);
     context.read<SolutionCubit>().clear();
+    context.read<ShotgunPatternCubit>().clear();
   }
 
-  void _openProfileScreen() {
-    Navigator.of(context).push(
+  void _openProfileScreen() async {
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) {
           return MultiBlocProvider(
             providers: [
               BlocProvider.value(value: context.read<ProfileCubit>()),
               BlocProvider.value(value: context.read<SubscriptionCubit>()),
+              BlocProvider.value(value: context.read<ShotgunPatternCubit>()),
             ],
             child: const ProfileListScreen(),
           );
         },
       ),
     );
+    if (!mounted || _mapboxMap == null) return;
+    final ps = context.read<ProfileCubit>().state;
+    if (ps is ProfileLoaded && ps.profile is ShotgunSetup) {
+      final cam = await _mapboxMap!.getCameraState();
+      if (cam.zoom < 16) {
+        await _mapboxMap!.flyTo(
+          CameraOptions(zoom: 17.0),
+          MapAnimationOptions(duration: 600),
+        );
+      }
+    }
   }
 
   void _syncCamera() async {
@@ -914,15 +1118,8 @@ class _MapScreenState extends State<MapScreen> {
                 MapWidget(
                   key: const ValueKey('mapWidget'),
                   cameraOptions: CameraOptions(
-                    center: _locationReady
-                        ? Point(
-                            coordinates: Position(
-                              _effectiveLon!,
-                              _effectiveLat!,
-                            ),
-                          )
-                        : Point(coordinates: Position(-98.5795, 39.8283)),
-                    zoom: _locationReady ? 14.0 : 4.0,
+                    center: Point(coordinates: Position(-98.5795, 39.8283)),
+                    zoom: 4.0,
                   ),
                   styleUri: MapboxStyles.SATELLITE_STREETS,
                   onMapCreated: _onMapCreated,
@@ -935,85 +1132,63 @@ class _MapScreenState extends State<MapScreen> {
 
                 // Profile indicator (top left) — tappable when profiles exist
                 Positioned(
-                  top: MediaQuery.of(context).padding.top + 12,
+                  top: MediaQuery.of(context).padding.top + 32,
                   left: 12,
                   child: BlocBuilder<ProfileCubit, ProfileState>(
                     builder: (context, state) {
                       final hasProfile = state is ProfileLoaded;
+                      final maxW = MediaQuery.sizeOf(context).width * 0.42;
                       return GestureDetector(
                         onTap: _openProfileScreen,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.black87,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                hasProfile ? Icons.edit : Icons.add,
-                                color: hasProfile
-                                    ? Colors.orangeAccent
-                                    : Colors.orange,
-                                size: 16,
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                hasProfile
-                                    ? state.profile.name
-                                    : 'Create Profile',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 13,
-                                ),
-                              ),
-                              if (hasProfile) ...[
-                                const SizedBox(width: 4),
-                                const Icon(
-                                  Icons.chevron_right,
-                                  color: Colors.white38,
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(maxWidth: maxW),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.black87,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  hasProfile ? Icons.edit : Icons.add,
+                                  color: hasProfile
+                                      ? Colors.orangeAccent
+                                      : Colors.orange,
                                   size: 16,
                                 ),
+                                const SizedBox(width: 6),
+                                Flexible(
+                                  child: Text(
+                                    hasProfile
+                                        ? state.profile.name
+                                        : 'Create Profile',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                    maxLines: 1,
+                                  ),
+                                ),
+                                if (hasProfile) ...[
+                                  const SizedBox(width: 4),
+                                  const Icon(
+                                    Icons.chevron_right,
+                                    color: Colors.white38,
+                                    size: 16,
+                                  ),
+                                ],
                               ],
-                            ],
+                            ),
                           ),
                         ),
                       );
                     },
-                  ),
-                ),
-
-                // Crosshair hint
-                Positioned(
-                  top: MediaQuery.of(context).padding.top + 12,
-                  right: 12,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          'Long press for ballistics calc',
-                          style: TextStyle(color: Colors.white60, fontSize: 12),
-                        ),
-                        SizedBox(height: 2),
-                        Text(
-                          'Short press to drop pin',
-                          style: TextStyle(color: Colors.white60, fontSize: 12),
-                        ),
-                      ],
-                    ),
                   ),
                 ),
 
@@ -1184,10 +1359,69 @@ class _MapScreenState extends State<MapScreen> {
                   },
                 ),
 
+                // Shotgun lethal range circle (always visible with shotgun profile)
+                BlocBuilder<ProfileCubit, ProfileState>(
+                  builder: (context, profileState) {
+                    if (profileState is ProfileLoaded &&
+                        profileState.profile is ShotgunSetup &&
+                        _effectiveLat != null &&
+                        _mapboxMap != null) {
+                      final sg = profileState.profile as ShotgunSetup;
+                      return LethalRangeOverlay(
+                        mapboxMap: _mapboxMap!,
+                        centerLat: _effectiveLat!,
+                        centerLon: _effectiveLon!,
+                        rangeYards: ShotgunBallistics.effectiveRangeYards(sg),
+                        gameLabel: sg.gameTarget.label,
+                      );
+                    }
+                    return const SizedBox.shrink();
+                  },
+                ),
+
+                // Shotgun spread cone overlay + pellet spray
+                BlocBuilder<ShotgunPatternCubit, ShotgunPatternState>(
+                  builder: (context, state) {
+                    if (state is PatternReady &&
+                        state.shooterLat != null &&
+                        _mapboxMap != null) {
+                      return Stack(
+                        children: [
+                          // Spread cone (colour zones)
+                          SpreadConeOverlay(
+                            mapboxMap: _mapboxMap!,
+                            shooterLat: state.shooterLat!,
+                            shooterLon: state.shooterLon!,
+                            targetLat: state.targetLat!,
+                            targetLon: state.targetLon!,
+                            result: state.result,
+                          ),
+                          // Animated pellet spray
+                          PelletSprayOverlay(
+                            key: ValueKey(
+                              'spray_${state.result.distanceYards}',
+                            ),
+                            mapboxMap: _mapboxMap!,
+                            shooterLat: state.shooterLat!,
+                            shooterLon: state.shooterLon!,
+                            targetLat: state.targetLat!,
+                            targetLon: state.targetLon!,
+                            pelletCount: state.setup.pelletCount,
+                            spreadDiameterInches:
+                                state.result.spreadDiameterInches,
+                            distanceYards: state.result.distanceYards,
+                          ),
+                        ],
+                      );
+                    }
+                    return const SizedBox.shrink();
+                  },
+                ),
+
                 // Location override pick-mode banner
                 if (_locationPickMode)
                   Positioned(
-                    top: MediaQuery.of(context).padding.top + 67,
+                    top: MediaQuery.of(context).padding.top + 82,
                     left: 0,
                     right: 0,
                     child: Center(
@@ -1232,49 +1466,10 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   ),
 
-                // Location override active badge
-                if (_locationOverride && !_locationPickMode)
-                  Positioned(
-                    top: MediaQuery.of(context).padding.top + 67,
-                    right: 12,
-                    child: GestureDetector(
-                      onTap: _handleMyLocationTap,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.orangeAccent,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.edit_location_alt,
-                              color: Colors.black87,
-                              size: 14,
-                            ),
-                            SizedBox(width: 4),
-                            Text(
-                              'Manual location',
-                              style: TextStyle(
-                                color: Colors.black87,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-
                 // Wind location-pick mode banner
                 if (_windPickLocation)
                   Positioned(
-                    top: MediaQuery.of(context).padding.top + 67,
+                    top: MediaQuery.of(context).padding.top + 82,
                     left: 0,
                     right: 0,
                     child: Center(
@@ -1319,122 +1514,165 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   ),
 
-                // Wind speed badge (top-left, below profile indicator)
-                if (_windEnabled)
-                  Positioned(
-                    top: MediaQuery.of(context).padding.top + 52,
-                    left: 12,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black87,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Transform.rotate(
-                            angle:
-                                ((_windBearingDeg + 180) % 360) * pi / 180 -
-                                pi / 2,
-                            child: const Icon(
-                              Icons.air,
-                              color: Colors.white70,
-                              size: 14,
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            '${_windSpeedMph.round()} mph ${_compassLabel(_windBearingDeg)}'
-                            '${_windManual ? '  ✎' : ''}',
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                // Zoom controls + compass + my location (right side)
-
-                // Hike recording banner (top, below wind badge area)
+                // Badge queue (top-right, stacking)
                 BlocBuilder<HikeTrackCubit, HikeTrackState>(
                   builder: (context, hikeState) {
-                    if (hikeState is HikeTrackRecording ||
-                        hikeState is HikeTrackPaused) {
-                      final isRecording = hikeState is HikeTrackRecording;
-                      final double dist;
-                      final int secs;
-                      if (hikeState is HikeTrackRecording) {
-                        dist = hikeState.distanceMeters;
-                        secs = hikeState.activeDurationSeconds;
-                      } else {
-                        final p = hikeState as HikeTrackPaused;
-                        dist = p.distanceMeters;
-                        secs = p.activeDurationSeconds;
-                      }
-                      final h = secs ~/ 3600;
-                      final m = (secs % 3600) ~/ 60;
-                      final s = secs % 60;
-                      final timeStr =
-                          '$h:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
-                      final distMi = dist * 0.000621371;
-                      final distStr = distMi >= 0.1
-                          ? '${distMi.toStringAsFixed(1)} mi'
-                          : '${dist.round()} m';
-                      return Positioned(
-                        top:
-                            MediaQuery.of(context).padding.top +
-                            (_windEnabled ? 82 : 52),
-                        left: 12,
-                        child: GestureDetector(
-                          onTap: () => _handleHikeButtonTap(context, hikeState),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: isRecording
-                                  ? Colors.teal.withAlpha(220)
-                                  : Colors.amber.withAlpha(220),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  isRecording
-                                      ? Icons.fiber_manual_record
-                                      : Icons.pause,
-                                  color: isRecording
-                                      ? Colors.redAccent
-                                      : Colors.black87,
-                                  size: 12,
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  '$distStr  •  $timeStr',
-                                  style: TextStyle(
-                                    color: isRecording
-                                        ? Colors.white
-                                        : Colors.black87,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
+                    final hikeActive =
+                        hikeState is HikeTrackRecording ||
+                        hikeState is HikeTrackPaused;
+                    return Positioned(
+                      top: MediaQuery.of(context).padding.top + 0,
+                      right: 12,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          // Wind badge
+                          if (_windEnabled) ...[
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.black87,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Transform.rotate(
+                                    angle:
+                                        ((_windBearingDeg + 180) % 360) *
+                                            pi /
+                                            180 -
+                                        pi / 2,
+                                    child: const Icon(
+                                      Icons.air,
+                                      color: Colors.white70,
+                                      size: 14,
+                                    ),
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '${_windSpeedMph.round()} mph ${_compassLabel(_windBearingDeg)}'
+                                    '${_windManual ? '  ✎' : ''}',
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
-                        ),
-                      );
-                    }
-                    return const SizedBox.shrink();
+                            const SizedBox(height: 6),
+                          ],
+                          // Hike tracking badge
+                          if (hikeActive) ...[
+                            Builder(
+                              builder: (context) {
+                                final isRecording =
+                                    hikeState is HikeTrackRecording;
+                                final double dist;
+                                final int secs;
+                                if (hikeState is HikeTrackRecording) {
+                                  dist = hikeState.distanceMeters;
+                                  secs = hikeState.activeDurationSeconds;
+                                } else {
+                                  final p = hikeState as HikeTrackPaused;
+                                  dist = p.distanceMeters;
+                                  secs = p.activeDurationSeconds;
+                                }
+                                final h = secs ~/ 3600;
+                                final m = (secs % 3600) ~/ 60;
+                                final s = secs % 60;
+                                final timeStr =
+                                    '$h:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+                                final distMi = dist * 0.000621371;
+                                final distStr = distMi >= 0.1
+                                    ? '${distMi.toStringAsFixed(1)} mi'
+                                    : '${dist.round()} m';
+                                return GestureDetector(
+                                  onTap: () =>
+                                      _handleHikeButtonTap(context, hikeState),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: isRecording
+                                          ? Colors.teal.withAlpha(220)
+                                          : Colors.amber.withAlpha(220),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          isRecording
+                                              ? Icons.fiber_manual_record
+                                              : Icons.pause,
+                                          color: isRecording
+                                              ? Colors.redAccent
+                                              : Colors.black87,
+                                          size: 12,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          '$distStr  •  $timeStr',
+                                          style: TextStyle(
+                                            color: isRecording
+                                                ? Colors.white
+                                                : Colors.black87,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                            const SizedBox(height: 6),
+                          ],
+                          // Manual location badge
+                          if (_locationOverride && !_locationPickMode)
+                            GestureDetector(
+                              onTap: _handleMyLocationTap,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.orangeAccent,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.edit_location_alt,
+                                      color: Colors.black87,
+                                      size: 14,
+                                    ),
+                                    SizedBox(width: 4),
+                                    Text(
+                                      'Manual location',
+                                      style: TextStyle(
+                                        color: Colors.black87,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    );
                   },
                 ),
 
@@ -1503,6 +1741,46 @@ class _MapScreenState extends State<MapScreen> {
                       );
                     }
                     if (state is SolutionError) {
+                      return Positioned(
+                        left: 16,
+                        right: 16,
+                        bottom: MediaQuery.of(context).padding.bottom + 90,
+                        child: Card(
+                          color: Colors.red[900],
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Text(
+                              state.message,
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      );
+                    }
+                    return const SizedBox.shrink();
+                  },
+                ),
+
+                // Shotgun pattern card (bottom sheet)
+                BlocBuilder<ShotgunPatternCubit, ShotgunPatternState>(
+                  builder: (context, state) {
+                    if (state is PatternReady) {
+                      return Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        child: _DismissiblePatternCard(
+                          result: state.result,
+                          setup: state.setup,
+                          onDismiss: () =>
+                              context.read<ShotgunPatternCubit>().clear(),
+                          onDelete: state.lineId != null
+                              ? () => _deleteEntry(state.lineId!)
+                              : null,
+                        ),
+                      );
+                    }
+                    if (state is PatternError) {
                       return Positioned(
                         left: 16,
                         right: 16,
@@ -1594,4 +1872,73 @@ class _AnnotationGroup {
   final PointAnnotation label;
 
   _AnnotationGroup({required this.line, this.pin, required this.label});
+}
+
+/// Wraps the pattern card with swipe-to-dismiss and an expand-to-full-view button.
+class _DismissiblePatternCard extends StatefulWidget {
+  final PatternResult result;
+  final ShotgunSetup setup;
+  final VoidCallback onDismiss;
+  final VoidCallback? onDelete;
+
+  const _DismissiblePatternCard({
+    required this.result,
+    required this.setup,
+    required this.onDismiss,
+    this.onDelete,
+  });
+
+  @override
+  State<_DismissiblePatternCard> createState() =>
+      _DismissiblePatternCardState();
+}
+
+class _DismissiblePatternCardState extends State<_DismissiblePatternCard> {
+  double _dragOffset = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onVerticalDragUpdate: (details) {
+        setState(() {
+          _dragOffset = (_dragOffset + details.delta.dy).clamp(0.0, 400.0);
+        });
+      },
+      onVerticalDragEnd: (details) {
+        if (_dragOffset > 80 || details.primaryVelocity! > 300) {
+          widget.onDismiss();
+        } else {
+          setState(() => _dragOffset = 0);
+        }
+      },
+      child: Transform.translate(
+        offset: Offset(0, _dragOffset),
+        child: PatternCard(
+          result: widget.result,
+          onDismiss: widget.onDismiss,
+          onDelete: widget.onDelete,
+          onExpand: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => MultiBlocProvider(
+                  providers: [
+                    BlocProvider.value(
+                      value: context.read<ShotgunPatternCubit>(),
+                    ),
+                    BlocProvider.value(
+                      value: context.read<SubscriptionCubit>(),
+                    ),
+                  ],
+                  child: PatternResultScreen(
+                    initialResult: widget.result,
+                    setup: widget.setup,
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
 }

@@ -2,15 +2,14 @@ import 'dart:convert';
 
 import 'package:hive/hive.dart';
 
-import '../models/rifle_profile.dart';
+import '../models/weapon_profile.dart';
 
-/// Persists rifle profiles using Hive.
+/// Persists weapon profiles (rifle or shotgun) using Hive.
 ///
 /// Free users: single profile only (index 0).
 /// Pro users: unlimited profiles with an active selection.
 class ProfileService {
   static const _boxName = 'profiles';
-  static const _activeKey = 'active_profile'; // legacy single-profile key
   static const _listKey = 'profile_list';
   static const _activeIndexKey = 'active_index';
 
@@ -18,31 +17,19 @@ class ProfileService {
 
   // ── Multi-profile API ──────────────────────────────────────────────
 
-  /// Load all saved profiles. Migrates the legacy single profile if needed.
-  Future<List<RifleProfile>> loadProfiles() async {
+  /// Load all saved profiles.
+  Future<List<WeaponProfile>> loadProfiles() async {
     final box = await _openBox();
     final raw = box.get(_listKey);
     if (raw != null) {
       final list = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
-      return list.map(RifleProfile.fromJson).toList();
+      return list.map(WeaponProfile.fromJson).toList();
     }
-
-    // Migrate legacy single-profile data
-    final legacy = box.get(_activeKey);
-    if (legacy != null) {
-      final profile = RifleProfile.fromJson(
-        jsonDecode(legacy) as Map<String, dynamic>,
-      );
-      await _saveList(box, [profile]);
-      await box.put(_activeIndexKey, '0');
-      return [profile];
-    }
-
     return [];
   }
 
   /// Save the full profile list.
-  Future<void> saveProfiles(List<RifleProfile> profiles) async {
+  Future<void> saveProfiles(List<WeaponProfile> profiles) async {
     final box = await _openBox();
     await _saveList(box, profiles);
   }
@@ -60,15 +47,15 @@ class ProfileService {
     await box.put(_activeIndexKey, index.toString());
   }
 
-  Future<void> _saveList(Box<String> box, List<RifleProfile> profiles) async {
+  Future<void> _saveList(Box<String> box, List<WeaponProfile> profiles) async {
     final json = jsonEncode(profiles.map((p) => p.toJson()).toList());
     await box.put(_listKey, json);
   }
 
   // ── Legacy single-profile API (still used by free tier) ────────────
 
-  /// Save the active profile (convenience — overwrites index 0).
-  Future<void> saveProfile(RifleProfile profile) async {
+  /// Save the active profile (convenience — overwrites active index).
+  Future<void> saveProfile(WeaponProfile profile) async {
     final profiles = await loadProfiles();
     if (profiles.isEmpty) {
       profiles.add(profile);
@@ -84,7 +71,7 @@ class ProfileService {
   }
 
   /// Load the active profile. Returns null if none saved.
-  Future<RifleProfile?> loadProfile() async {
+  Future<WeaponProfile?> loadProfile() async {
     final profiles = await loadProfiles();
     if (profiles.isEmpty) return null;
     final idx = await loadActiveIndex();

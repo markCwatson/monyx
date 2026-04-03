@@ -1,7 +1,7 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:equatable/equatable.dart';
 
-import '../models/rifle_profile.dart';
+import '../models/weapon_profile.dart';
 import '../services/profile_service.dart';
 
 // --- States ---
@@ -17,8 +17,8 @@ class ProfileInitial extends ProfileState {
 }
 
 class ProfileLoaded extends ProfileState {
-  final RifleProfile profile; // currently active
-  final List<RifleProfile> profiles; // all saved profiles
+  final WeaponProfile profile; // currently active
+  final List<WeaponProfile> profiles; // all saved profiles
   final int activeIndex;
   const ProfileLoaded(
     this.profile, {
@@ -57,13 +57,13 @@ class ProfileCubit extends Cubit<ProfileState> {
     );
   }
 
-  Future<void> save(RifleProfile profile) async {
+  Future<void> save(WeaponProfile profile) async {
     await _service.saveProfile(profile);
     await load(); // reload full list
   }
 
   /// Add a new profile and make it active.
-  Future<void> add(RifleProfile profile) async {
+  Future<void> add(WeaponProfile profile) async {
     final profiles = await _service.loadProfiles();
     profiles.add(profile);
     await _service.saveProfiles(profiles);

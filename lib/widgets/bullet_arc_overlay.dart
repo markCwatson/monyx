@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' hide Size;
 
+import 'map_line_projector.dart';
+
 /// Animated bullet that loops along an exaggerated arc from shooter to target.
 ///
 /// The arc bows toward the upwind side: if crosswind pushes the bullet right,
@@ -78,25 +80,21 @@ class _BulletArcOverlayState extends State<BulletArcOverlay>
     if (_projecting) return;
     _projecting = true;
     try {
-      final shooterPx = await widget.mapboxMap.pixelForCoordinate(
-        Point(
-          coordinates:
-              Position(widget.shooterLon, widget.shooterLat),
-        ),
+      final result = await MapLineProjector.project(
+        widget.mapboxMap,
+        shooterLat: widget.shooterLat,
+        shooterLon: widget.shooterLon,
+        targetLat: widget.targetLat,
+        targetLon: widget.targetLon,
       );
-      final targetPx = await widget.mapboxMap.pixelForCoordinate(
-        Point(
-          coordinates:
-              Position(widget.targetLon, widget.targetLat),
-        ),
-      );
-      if (mounted) {
-        _shooterScreen = Offset(shooterPx.x, shooterPx.y);
-        _targetScreen = Offset(targetPx.x, targetPx.y);
+      if (mounted && result != null) {
+        _shooterScreen = result.$1;
+        _targetScreen = result.$2;
+      } else if (mounted) {
+        _shooterScreen = null;
+        _targetScreen = null;
       }
-    } catch (_) {
-      // Map not ready yet — will retry next frame.
-    }
+    } catch (_) {}
     _projecting = false;
   }
 
@@ -173,9 +171,7 @@ class _BulletArcPainter extends CustomPainter {
     // with a minimum visible curve when there IS crosswind.
     final cwAbs = crosswindMph.abs();
     final cwSign = crosswindMph >= 0 ? 1.0 : -1.0;
-    final fraction = cwAbs < 0.5
-        ? 0.0
-        : (0.12 + 0.04 * cwAbs).clamp(0.0, 0.6);
+    final fraction = cwAbs < 0.5 ? 0.0 : (0.12 + 0.04 * cwAbs).clamp(0.0, 0.6);
     final controlOffset = perpLeft * (lineLen * fraction * cwSign);
     final mid = Offset.lerp(A, B, 0.5)!;
     final C = mid + controlOffset; // quadratic Bezier control point
@@ -192,7 +188,7 @@ class _BulletArcPainter extends CustomPainter {
     canvas.drawPath(path, pathPaint);
 
     // --- animate bullet ---
-    if (t > flightFraction) return; // in the pause gap
+    if (t > flightFraction) return;
 
     final bt = t / flightFraction; // 0–1 within the flight portion
 
@@ -233,9 +229,6 @@ class _BulletArcPainter extends CustomPainter {
     final corePaint = Paint()..color = Colors.white.withValues(alpha: 0.9);
     canvas.drawCircle(Offset.zero, 1.5, corePaint);
     canvas.restore();
-
-    // Fade-in at start, fade-out at end
-    // (handled via trail naturally)
   }
 
   static Offset _quadBezier(Offset a, Offset c, Offset b, double t) {

@@ -10,6 +10,7 @@ import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 import 'blocs/hike_track_cubit.dart';
 import 'blocs/plant_cubit.dart';
 import 'blocs/profile_cubit.dart';
+import 'blocs/shotgun_pattern_cubit.dart';
 import 'blocs/solution_cubit.dart';
 import 'blocs/subscription_cubit.dart';
 import 'blocs/track_cubit.dart';
@@ -17,10 +18,12 @@ import 'config.dart';
 import 'screens/map/map_screen.dart';
 import 'services/elevation_service.dart';
 import 'services/hike_track_service.dart';
+import 'ballistics/pattern_engine.dart';
 import 'services/plant_classifier.dart';
 import 'services/plant_reranker.dart';
 import 'services/plant_service.dart';
 import 'services/profile_service.dart';
+import 'services/shotgun_service.dart';
 import 'services/subscription_service.dart';
 import 'services/track_detector.dart';
 import 'services/track_service.dart';
@@ -81,6 +84,12 @@ class MonyxApp extends StatelessWidget {
         ),
         BlocProvider(
           create: (_) => HikeTrackCubit(service: HikeTrackService()),
+        ),
+        BlocProvider(
+          create: (_) => ShotgunPatternCubit(
+            engine: PatternEngine(),
+            service: ShotgunService(),
+          ),
         ),
       ],
       child: MaterialApp(

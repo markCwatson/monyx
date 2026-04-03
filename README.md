@@ -84,25 +84,25 @@ Animated wind particle overlay on the map with manual entry for free users and l
 
 ### Free vs Pro
 
-| Capability | Free | Pro |
-| --- | --- | --- |
-| Manual wind entry (speed + direction) | ✅ | ✅ |
-| Wind used in ballistic calculations | ✅ | ✅ |
-| Wind speed badge on map | ✅ | ✅ |
-| Live wind from Open-Meteo API | — | ✅ |
-| Animated particle overlay (Windy-style) | — | ✅ |
-| Pick location on map | — | ✅ |
-| Forecast wind (date/time picker) | — | ✅ |
-| Saved weather profiles (Hive, offline) | — | ✅ |
+| Capability                              | Free | Pro |
+| --------------------------------------- | ---- | --- |
+| Manual wind entry (speed + direction)   | ✅   | ✅  |
+| Wind used in ballistic calculations     | ✅   | ✅  |
+| Wind speed badge on map                 | ✅   | ✅  |
+| Live wind from Open-Meteo API           | —    | ✅  |
+| Animated particle overlay (Windy-style) | —    | ✅  |
+| Pick location on map                    | —    | ✅  |
+| Forecast wind (date/time picker)        | —    | ✅  |
+| Saved weather profiles (Hive, offline)  | —    | ✅  |
 
 ### Technical details
 
-| Component | Detail |
-| --- | --- |
-| **Particle system** | ~600 particles at 60fps via `CustomPainter` + `Ticker`, trailing lines with fade envelope |
-| **Weather API** | Open-Meteo current + hourly forecast (wind speed + direction at 10m, free for non-commercial) |
+| Component                  | Detail                                                                                                                                                                             |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Particle system**        | ~600 particles at 60fps via `CustomPainter` + `Ticker`, trailing lines with fade envelope                                                                                          |
+| **Weather API**            | Open-Meteo current + hourly forecast (wind speed + direction at 10m, free for non-commercial)                                                                                      |
 | **Ballistics integration** | When wind is set (manual or live), `SolutionCubit.compute()` overrides the API weather's wind fields via `WeatherData.withWind()` so the solution card and wind badge always agree |
-| **Offline profiles** | Each live fetch is auto-saved to Hive; dedicated Saved Weather screen for viewing, applying, or deleting |
+| **Offline profiles**       | Each live fetch is auto-saved to Hive; dedicated Saved Weather screen for viewing, applying, or deleting                                                                           |
 
 ### Data flow
 
@@ -134,7 +134,16 @@ Ballistics: cubit.compute(..., windSpeedMph, windDirectionDeg) → solver uses o
 - **Xcode** with iOS Simulator installed
 - **Android Studio** with Android SDK 36+
 - **CocoaPods** (`brew install cocoapods`)
+- **CMake** (`brew install cmake`) — required by `opencv_dart` / `dartcv4` to compile OpenCV from source during the native build
 - **Mapbox account** with two tokens (see below)
+
+> **CMake note:** `dartcv4` uses a Dart native-assets build hook that invokes CMake. Xcode's restricted build environment may not include `/opt/homebrew/bin` in its PATH. If the build fails with `Failed to find cmake version: latest`, symlink it:
+>
+> ```bash
+> sudo ln -sf /opt/homebrew/bin/cmake /usr/local/bin/cmake
+> ```
+>
+> The first build after adding `opencv_dart` compiles OpenCV from source and takes several minutes. Subsequent builds use the cached artifacts.
 
 ### 1. Clone and install dependencies
 
@@ -213,8 +222,9 @@ flutter analyze
 ### Run tests
 
 ```bash
-flutter test                            # All tests
-flutter test test/widget_test.dart      # Ballistics solver tests only
+flutter test                                    # All tests
+flutter test test/ballistics_test.dart              # Ballistics solver tests only
+flutter test test/pattern_engine_test.dart      # Shotgun pattern engine tests only
 ```
 
 ### Boot a simulator
@@ -333,11 +343,11 @@ Also set via Podfile `post_install`. After linking, Xcode runs `strip` on the bi
 
 ### What didn't work
 
-| Approach | Why it failed |
-| --- | --- |
-| `DynamicLibrary.open('TensorFlowLiteC.framework/TensorFlowLiteC')` in Dart | Works on simulator (dynamic framework) but the framework file doesn't exist on device (static lib) |
-| `-Wl,-u,_TfLiteModelCreate` in `OTHER_LDFLAGS` | Tells the linker the symbol is needed, but post-link `strip` still removes it |
-| `STRIP_STYLE = non-global` on all targets via Podfile | Preserves symbols but also preserves simulator platform tags in pod frameworks → Xcode distribution validation failure |
+| Approach                                                                   | Why it failed                                                                                                          |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `DynamicLibrary.open('TensorFlowLiteC.framework/TensorFlowLiteC')` in Dart | Works on simulator (dynamic framework) but the framework file doesn't exist on device (static lib)                     |
+| `-Wl,-u,_TfLiteModelCreate` in `OTHER_LDFLAGS`                             | Tells the linker the symbol is needed, but post-link `strip` still removes it                                          |
+| `STRIP_STYLE = non-global` on all targets via Podfile                      | Preserves symbols but also preserves simulator platform tags in pod frameworks → Xcode distribution validation failure |
 
 ## Deploy to App Store Connect
 
@@ -395,80 +405,6 @@ After upload, the build takes ~10–30 minutes to process in App Store Connect:
 4. Click **Submit for Review**
 
 > **Important:** The Mapbox public token is baked in at compile time via `--dart-define-from-file=.env`. If you build or archive from Xcode directly (without the Flutter CLI), the token will be empty and the map will show a black screen. Always use `flutter build ipa` first.
-
-## Project Structure
-
-```
-lib/
-  main.dart                     — Entry point, Hive init, BLoC providers
-  config.dart                   — Compile-time env config (--dart-define)
-  screens/
-    map_screen.dart             — Mapbox map + GPS + pin drop + solution trigger + banner ad
-    profile_list_screen.dart    — Profile selector (free: 1, pro: unlimited) + upgrade prompt
-    profile_screen.dart         — Rifle/ammo profile form (create/edit)
-    track_result_screen.dart    — Full-screen track ID results (annotated image + species list)
-    saved_tracks_screen.dart    — List of saved track identification results
-    plant_result_screen.dart    — Full-screen plant ID results (photo + species list)
-    saved_plants_screen.dart    — List of saved plant identification results
-    saved_hike_tracks_screen.dart — List of saved hike tracks
-  models/
-    rifle_profile.dart          — Rifle + ammo data classes + JSON
-    weather_data.dart           — Open-Meteo response model
-    shot_solution.dart          — Solver output model
-    detection.dart              — Single YOLO bounding-box detection
-    track_result.dart           — Saved track identification result
-    plant_result.dart           — PlantPart enum, PlantPrediction, PlantResult
-    plant_metadata.dart         — Species metadata model for reranking
-    hike_track.dart             — HikePoint + HikeTrack data classes
-  ballistics/
-    drag_tables.dart            — G1/G7 Cd-vs-Mach tables + PCHIP spline interpolation
-    atmosphere.dart             — CIPM-2007 air density, speed of sound, lapse-rate AtmoState
-    solver.dart                 — RK4 point-mass 3-DoF solver (pyballistic port)
-    conversions.dart            — Inches ↔ MOA ↔ clicks, haversine, wind decomp
-  services/
-    weather_service.dart        — Open-Meteo HTTP adapter
-    elevation_service.dart      — Open-Meteo elevation queries
-    profile_service.dart        — Hive persistence for rifle profiles (supports multi-profile)
-    ad_service.dart             — AdMob ad-unit IDs (test in debug, real in release)
-    subscription_service.dart   — In-app purchase wrapper (StoreKit / Google Play)
-    track_detector.dart         — On-device YOLOv11 TFLite inference engine
-    track_service.dart          — Hive persistence for saved track results
-    plant_classifier.dart       — On-device EfficientNet-Lite0 TFLite classifier
-    plant_service.dart          — Hive persistence for saved plant results
-    plant_reranker.dart         — Metadata-based reranking (region, season, part)
-    region_lookup.dart          — Offline GPS → US state / CA province lookup
-    hike_track_service.dart     — Hive persistence for saved hike tracks
-  blocs/
-    profile_cubit.dart          — Profile load/save/switch state (multi-profile)
-    solution_cubit.dart         — Shot solution computation state
-    subscription_cubit.dart     — Free/Pro subscription state
-    track_cubit.dart            — Track identification flow state
-    plant_cubit.dart            — Plant identification flow state
-    hike_track_cubit.dart       — Hike recording state machine (background GPS)
-  widgets/
-    solution_card.dart          — Bottom sheet with corrections
-    detection_image_painter.dart — Bounding-box overlay painter for track photos
-assets/
-  models/
-    footprint_det_float16.tflite — YOLOv11n footprint detector (117 species, ~10 MB)
-    feces_det_float16.tflite     — YOLOv11n feces detector (101 species, ~10 MB)
-    footprint_classes.json       — Footprint class-name mapping
-    feces_classes.json           — Feces class-name mapping
-    plant_classifier_float16.tflite — EfficientNet-Lite0 plant classifier (~5–15 MB)
-    plant_classes.json           — Plant species class-name mapping
-    plant_metadata.json          — Species metadata (regions, months, parts, toxicity)
-tools/
-  export_models.py              — Download + convert YOLO models to TFLite
-  build_plant_dataset.py        — Download iNaturalist plant images
-  build_plant_metadata.py       — Build species metadata for reranking
-  train_plant_classifier.py     — Train EfficientNet-Lite0 classifier
-  export_plant_classifier.py    — Export trained model to TFLite
-  requirements.txt              — Python dependencies for model export + training
-ios/
-  MonyxProducts.storekit        — Xcode StoreKit test configuration
-test/
-  widget_test.dart              — Ballistics solver smoke tests
-```
 
 ## Monetisation
 
@@ -677,10 +613,10 @@ Pro subscribers can record GPS hike tracks — even with the app in the backgrou
 
 ### Background tracking
 
-| Platform | Mechanism | User indicator |
-| --- | --- | --- |
-| **iOS** | `AppleSettings(allowBackgroundLocationUpdates: true, activityType: fitness)` | Blue location bar in status area |
-| **Android** | `AndroidSettings(foregroundNotificationConfig: ...)` | Persistent notification: "Monyx — Tracking Hike" |
+| Platform    | Mechanism                                                                    | User indicator                                   |
+| ----------- | ---------------------------------------------------------------------------- | ------------------------------------------------ |
+| **iOS**     | `AppleSettings(allowBackgroundLocationUpdates: true, activityType: fitness)` | Blue location bar in status area                 |
+| **Android** | `AndroidSettings(foregroundNotificationConfig: ...)`                         | Persistent notification: "Monyx — Tracking Hike" |
 
 GPS stream continues when the app is minimized or the screen is locked. No internet required — GPS altitude is used for elevation.
 
@@ -696,11 +632,128 @@ Distances and elevation are shown in dual units — imperial primary with metric
 
 ### Architecture
 
-| Component   | File                                          | Role                                                    |
-| ----------- | --------------------------------------------- | ------------------------------------------------------- |
-| Model       | `lib/models/hike_track.dart`                  | HikePoint + HikeTrack data classes with JSON            |
-| Persistence | `lib/services/hike_track_service.dart`        | Hive-based save/load/delete for hike tracks             |
-| State       | `lib/blocs/hike_track_cubit.dart`             | Recording state machine with background GPS stream      |
-| Map path    | `lib/screens/map_screen.dart`                 | GeoJSON source + footstep symbol layer on Mapbox        |
-| Saved list  | `lib/screens/saved_hike_tracks_screen.dart`   | Browse and revisit past hikes                           |
-| Haversine   | `lib/ballistics/conversions.dart`             | `haversineMeters()` for 2 m threshold check             |
+| Component   | File                                        | Role                                               |
+| ----------- | ------------------------------------------- | -------------------------------------------------- |
+| Model       | `lib/models/hike_track.dart`                | HikePoint + HikeTrack data classes with JSON       |
+| Persistence | `lib/services/hike_track_service.dart`      | Hive-based save/load/delete for hike tracks        |
+| State       | `lib/blocs/hike_track_cubit.dart`           | Recording state machine with background GPS stream |
+| Map path    | `lib/screens/map_screen.dart`               | GeoJSON source + footstep symbol layer on Mapbox   |
+| Saved list  | `lib/screens/saved_hike_tracks_screen.dart` | Browse and revisit past hikes                      |
+| Haversine   | `lib/ballistics/conversions.dart`           | `haversineMeters()` for 2 m threshold check        |
+
+## Shotgun Pattern Estimation
+
+Users can create shotgun profiles alongside rifle profiles. Select a shotgun setup (gauge, choke, load, wad type), drop a pin on the map, and see an estimated pellet pattern at the computed distance. Pro subscribers can calibrate predictions with real patterning-board photos analysed on-device via OpenCV.
+
+### How it works
+
+1. **Create profile** — Tap the profile button → **Add** → select **Shotgun** → fill in gauge, choke, load details, pellet count, wad type, and ammo spread class.
+2. **Predict** — Long-press the map to drop a pin. The app computes haversine distance from your GPS position to the pin and displays the predicted pattern at that range.
+3. **Visualise** — A full-screen pattern view shows concentric circles (spread edge, R75, R50, 20" and 10" reference circles) with simulated pellet dots, plus metric pills (spread diameter, R50, R75, pellets in 10"/20" circles).
+4. **Adjust distance** — A slider (5–60 yds) lets you explore different ranges; the pattern updates live.
+5. **Calibrate (Pro)** — Tap "Calibrate from Photo", follow the instructions (fire one shot at a 24"×24" white sheet from 20 yds), take a photo, and the app analyses it on-device. A before/after comparison lets you accept or discard the calibration.
+6. **Improve over time** — Each accepted calibration is blended into the setup's stored record using an exponential moving average, progressively refining predictions.
+
+### Free vs Pro
+
+| Capability                                | Free | Pro |
+| ----------------------------------------- | ---- | --- |
+| Shotgun profile creation                  | ✅   | ✅  |
+| Pattern prediction (any distance)         | ✅   | ✅  |
+| Pattern visualisation + distance slider   | ✅   | ✅  |
+| Photo-based calibration                   | —    | ✅  |
+| Calibration history (cumulative blending) | —    | ✅  |
+
+### Pattern Engine
+
+The prediction engine uses a Rayleigh distribution model:
+
+| Component              | Detail                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------- |
+| **Spread diameter**    | `chokeBaseRate × distance × wadModifier × ammoModifier × calDiameterMultiplier` |
+| **Base rates (in/yd)** | Cylinder 1.0, Skeet 0.9, IC 0.8, Modified 0.7, IM 0.6, Full 0.5, Extra Full 0.4 |
+| **Wad modifiers**      | Plastic 0.90, Fiber 1.15                                                        |
+| **Ammo spread class**  | Tight 0.85, Standard 1.00, Wide 1.20                                            |
+| **R50**                | 35% of spread radius (heuristic) × calSigmaMultiplier                           |
+| **Rayleigh σ**         | `R50 / √(ln 4)`                                                                 |
+| **R75**                | `σ × √(2 ln 4)` = R50 × √2                                                      |
+| **Pellets in circle**  | `totalPellets × (1 - exp(-r² / 2σ²))` (Rayleigh CDF)                            |
+
+### Calibration Pipeline (opencv_dart)
+
+Photo calibration uses `opencv_dart` (dartcv4) to analyse patterning-board photos entirely on-device:
+
+1. **Decode** — `imdecode` from camera JPEG bytes.
+2. **Page detection** — Grayscale → Gaussian blur → adaptive threshold → `findContours` (external) → `approxPolyDP` to find the largest quadrilateral (≥5% of image area).
+3. **Perspective rectification** — `getPerspectiveTransform` + `warpPerspective` to a 720×720 px square (30 px/inch for 24" sheet).
+4. **Pellet detection** — Invert → Otsu threshold → morphological open (elliptical kernel) → `connectedComponentsWithStats` → filter by area (4–250 px²).
+5. **Metrics** — Centroid (POI offset), radial sort for R50/R75, pellets in 10"/20" circles, edge clipping likelihood, confidence score.
+6. **Blending** — New session is merged into the stored `CalibrationRecord` via exponential moving average weighted by session confidence.
+
+### Architecture
+
+| Component          | File                                           | Role                                                                                      |
+| ------------------ | ---------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Model              | `lib/models/shotgun_setup.dart`                | ShotgunSetup + enums (Gauge, ChokeType, ShotCategory, ShotSize, WadType, AmmoSpreadClass) |
+| Calibration data   | `lib/models/calibration_record.dart`           | Stored calibration multipliers per setup                                                  |
+| Session data       | `lib/models/calibration_session.dart`          | Single photo analysis output (metrics + pellet coordinates)                               |
+| Result data        | `lib/models/pattern_result.dart`               | Prediction output (spread, R50, R75, pellet counts, POI)                                  |
+| Engine             | `lib/ballistics/pattern_engine.dart`           | Rayleigh distribution prediction math                                                     |
+| CV pipeline        | `lib/services/pattern_calibrator.dart`         | opencv_dart page detection + pellet detection                                             |
+| Persistence        | `lib/services/shotgun_service.dart`            | Hive-based save/load for calibration records + session history                            |
+| State              | `lib/blocs/shotgun_pattern_cubit.dart`         | Predict, analyse photo, accept/discard calibration                                        |
+| Pattern viz        | `lib/widgets/pattern_painter.dart`             | CustomPainter rendering concentric circles + simulated pellets                            |
+| Calibration viz    | `lib/widgets/calibration_preview_painter.dart` | CustomPainter rendering detected pellet positions                                         |
+| Result screen      | `lib/screens/pattern_result_screen.dart`       | Pattern visualisation + metrics + distance slider + calibrate button                      |
+| Calibration screen | `lib/screens/calibration_result_screen.dart`   | Before/after comparison + accept/discard                                                  |
+| Profile form       | `lib/screens/profile_screen.dart`              | Unified rifle/shotgun profile editor (weapon type selector)                               |
+
+### Effective Range
+
+A red dashed circle on the map shows the **effective hunting range** for the selected shotgun profile and game animal. The user picks a game target (e.g. Deer, Duck, Turkey) in the profile editor; the circle updates automatically.
+
+#### Game targets
+
+Each `GameTarget` defines three thresholds:
+
+| Target            | Min pellet energy (ft-lbs) | Vital zone ∅ (in) | Min vital energy (ft-lbs) |
+| ----------------- | -------------------------: | ----------------: | ------------------------: |
+| Dove / Quail      |                        3.5 |               2.5 |                       3.0 |
+| Duck / Teal       |                        3.0 |               4.0 |                       5.0 |
+| Pheasant          |                        3.0 |               4.0 |                       5.0 |
+| Goose             |                        3.0 |               5.0 |                       8.0 |
+| Turkey            |                        1.0 |               3.0 |                      15.0 |
+| Rabbit / Squirrel |                        3.5 |               3.0 |                       3.0 |
+| Coyote            |                       35.0 |               7.0 |                      60.0 |
+| Deer              |                       35.0 |              10.0 |                     300.0 |
+| Hog               |                       40.0 |               8.0 |                     350.0 |
+
+- **Min pellet energy** — per-pellet kinetic energy floor for adequate penetration. High for buckshot targets (deer, hog, coyote) because the pellet must reach vitals through hide and muscle. Low for birdshot targets where small pellets suffice.
+- **Vital zone diameter** — approximate cross-section of the animal's lethal target area.
+- **Min vital energy** — total kinetic energy that must be delivered inside the vital zone. For large game (deer, hog) this is hundreds of ft-lbs; for birds a few ft-lbs is sufficient.
+
+#### Algorithm
+
+The effective range is the **minimum** of two independently computed limits:
+
+1. **Energy-limited range** — binary search for the farthest distance where a single pellet still carries ≥ `minPelletEnergyFtLbs`. Pellet velocity decays via an exponential drag model: `v(x) = v₀ × exp(−x / (BC × 6000))`, where BC is approximated as `mass_lbs / (d² × 1.5)` for a spherical projectile.
+
+2. **Confidence-limited range** — binary search for the farthest distance where, with **≥ 80 % probability**, enough pellets strike the vital zone to deliver `minVitalEnergyFtLbs` total. This uses a binomial survival function: `P(X ≥ k) where X ~ Binomial(n, p)`, with:
+   - `n` = pellet count
+   - `p` = probability a single pellet hits the vital circle, computed from the Rayleigh CDF (same σ model as the Pattern Engine)
+   - `k` = ⌈minVitalEnergyFtLbs / pelletEnergy⌉ — the minimum number of pellets needed
+
+Both binary searches converge to within 0.5 yards over a 0–300 yard domain.
+
+#### Verified ranges
+
+| Setup                            | Target | Effective range |
+| -------------------------------- | ------ | --------------: |
+| 12 ga 00 Buck, Cylinder, Plastic | Coyote |           44 yd |
+| 12 ga 00 Buck, Cylinder, Plastic | Deer   |           44 yd |
+| 12 ga 00 Buck, Cylinder, Plastic | Hog    |           29 yd |
+| 12 ga 00 Buck, Modified, Plastic | Deer   |           44 yd |
+| 12 ga #6 Lead, Modified, Plastic | Dove   |           38 yd |
+| 12 ga #6 Lead, Modified, Plastic | Duck   |           45 yd |
+| 12 ga TSS #9, Full, Plastic      | Turkey |           64 yd |
+| 20 ga #6 Lead, Modified, Plastic | Duck   |           42 yd |

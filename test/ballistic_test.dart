@@ -6,7 +6,7 @@ import 'package:monyx/models/weather_data.dart';
 
 /// Test profile matching pyballistic's G1 test:
 /// .308 168gr, BC 0.223 G1, MV 2750fps, 2" sight height, zero at 100yd
-const _g1Profile = RifleProfile(
+final _g1Profile = RifleProfile(
   name: 'G1 Test',
   caliber: '.308',
   barrelLengthInches: 24,
@@ -22,7 +22,7 @@ const _g1Profile = RifleProfile(
 
 /// Test profile matching pyballistic's G7 test:
 /// .308 168gr, BC 0.223 G7, MV 2750fps, 2" sight height, zero at 100yd
-const _g7Profile = RifleProfile(
+final _g7Profile = RifleProfile(
   name: 'G7 Test',
   caliber: '.308',
   barrelLengthInches: 24,

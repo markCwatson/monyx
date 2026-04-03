@@ -1,11 +1,8 @@
-import 'package:equatable/equatable.dart';
+import 'weapon_profile.dart';
 
 enum DragModel { g1, g7 }
 
-// Equatable is critical for the BLoC pattern — the cubit won't re-emit
-//... state if the new value equals the old one.
-class RifleProfile extends Equatable {
-  final String name;
+class RifleProfile extends WeaponProfile {
   final String caliber;
   final double barrelLengthInches;
   final double twistRateInches; // 1:X twist
@@ -17,8 +14,9 @@ class RifleProfile extends Equatable {
   final double ballisticCoefficient;
   final DragModel dragModel;
 
-  const RifleProfile({
-    required this.name,
+  RifleProfile({
+    super.id,
+    required super.name,
     required this.caliber,
     required this.barrelLengthInches,
     required this.twistRateInches,
@@ -32,7 +30,7 @@ class RifleProfile extends Equatable {
   });
 
   /// Sensible default: .308 Win 175gr SMK
-  factory RifleProfile.default308() => const RifleProfile(
+  factory RifleProfile.default308() => RifleProfile(
     name: 'Tikka T3X Varmint - Federal 175 Matchking',
     caliber: '.308 Win',
     barrelLengthInches: 24,
@@ -46,8 +44,14 @@ class RifleProfile extends Equatable {
     dragModel: DragModel.g7,
   );
 
+  @override
+  WeaponType get weaponType => WeaponType.rifle;
+
   // Hive stores raw JSON, so model must convert to/from Map<String, dynamic>
+  @override
   Map<String, dynamic> toJson() => {
+    'weaponType': weaponType.name,
+    'id': id,
     'name': name,
     'caliber': caliber,
     'barrelLengthInches': barrelLengthInches,
@@ -62,6 +66,7 @@ class RifleProfile extends Equatable {
   };
 
   factory RifleProfile.fromJson(Map<String, dynamic> json) => RifleProfile(
+    id: json['id'] as String?,
     name: json['name'] as String,
     caliber: json['caliber'] as String,
     barrelLengthInches: (json['barrelLengthInches'] as num).toDouble(),
@@ -78,6 +83,8 @@ class RifleProfile extends Equatable {
   // tells Equatable which fields to compare
   @override
   List<Object?> get props => [
+    weaponType,
+    id,
     name,
     caliber,
     barrelLengthInches,

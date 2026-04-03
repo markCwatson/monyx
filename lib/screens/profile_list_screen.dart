@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../blocs/profile_cubit.dart';
+import '../blocs/shotgun_pattern_cubit.dart';
 import '../blocs/subscription_cubit.dart';
 import '../models/rifle_profile.dart';
+import '../models/shotgun_setup.dart';
+import '../models/weapon_profile.dart';
 import 'profile_screen.dart';
 
 /// Shows saved profiles with the ability to switch, add, and delete.
@@ -80,17 +83,31 @@ class ProfileListScreen extends StatelessWidget {
                             : Icons.radio_button_off,
                         color: isActive ? Colors.orangeAccent : Colors.white38,
                       ),
-                      title: Text(
-                        p.name,
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: isActive
-                              ? FontWeight.bold
-                              : FontWeight.normal,
-                        ),
+                      title: Row(
+                        children: [
+                          Icon(
+                            p is RifleProfile
+                                ? Icons.gps_fixed
+                                : Icons.blur_circular,
+                            color: Colors.white54,
+                            size: 16,
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              p.name,
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: isActive
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                       subtitle: Text(
-                        '${p.caliber}  •  ${p.muzzleVelocityFps.round()} fps  •  BC ${p.ballisticCoefficient}',
+                        _profileSubtitle(p),
                         style: const TextStyle(color: Colors.white54),
                       ),
                       trailing: PopupMenuButton<String>(
@@ -150,7 +167,7 @@ class ProfileListScreen extends StatelessWidget {
     _openEditor(context);
   }
 
-  void _openEditor(BuildContext context, {RifleProfile? profile, int? index}) {
+  void _openEditor(BuildContext context, {WeaponProfile? profile, int? index}) {
     // Flutter's navigation works like a stack. push() adds a new
     //... screen on top (with a back animation). pop() removes it.
     Navigator.of(context).push(
@@ -166,6 +183,7 @@ class ProfileListScreen extends StatelessWidget {
             // ... than creating a new one).
             BlocProvider.value(value: context.read<ProfileCubit>()),
             BlocProvider.value(value: context.read<SubscriptionCubit>()),
+            BlocProvider.value(value: context.read<ShotgunPatternCubit>()),
           ],
           child: ProfileScreen(editProfile: profile, editIndex: index),
         ),
@@ -244,6 +262,15 @@ class ProfileListScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _profileSubtitle(WeaponProfile p) {
+    if (p is RifleProfile) {
+      return '${p.caliber}  •  ${p.muzzleVelocityFps.round()} fps  •  BC ${p.ballisticCoefficient}';
+    } else if (p is ShotgunSetup) {
+      return '${p.gauge.label}  •  ${p.chokeType.label}  •  ${p.shotSize.label} ${p.shotCategory.label}';
+    }
+    return p.name;
   }
 }
 
