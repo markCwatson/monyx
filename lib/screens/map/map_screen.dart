@@ -29,6 +29,7 @@ import '../../models/poi.dart';
 import '../../models/rifle_profile.dart';
 import '../../models/shotgun_setup.dart';
 import '../../models/weapon_profile.dart';
+import '../../models/saved_line.dart';
 import '../../models/shot_solution.dart';
 import '../../models/track_result.dart';
 import '../../models/weather_data.dart';
@@ -36,7 +37,9 @@ import '../../ballistics/conversions.dart';
 import '../../models/weather_profile.dart';
 import '../../models/wind_data.dart';
 import '../../services/ad_service.dart';
+import '../../services/line_service.dart';
 import '../../services/poi_service.dart';
+import '../../services/profile_service.dart';
 import '../../services/weather_profile_service.dart';
 import '../../services/weather_service.dart';
 import '../../ballistics/shotgun_ballistics.dart';
@@ -99,6 +102,7 @@ class _MapScreenState extends State<MapScreen> {
   StreamSubscription<geo.Position>? _positionSub;
   PointAnnotationManager? _poiManager;
   final PoiService _poiService = PoiService();
+  final LineService _lineService = LineService();
   final WeatherProfileService _weatherProfileService = WeatherProfileService();
   final Map<String, Poi> _poiAnnotations = {};
   bool _windEnabled = false;
@@ -193,10 +197,13 @@ class _MapScreenState extends State<MapScreen> {
       }
     });
     // Adjust zoom when profile loads/changes (shotgun → closer)
+    // Also swap visible lines to match the new profile.
     _profileSub = context.read<ProfileCubit>().stream.listen((state) {
       if (!mounted || _mapboxMap == null) return;
       if (state is ProfileLoaded) {
         _adjustZoomForProfile(state.profile);
+        _clearAllLines();
+        _loadSavedLines(profileId: state.profile.id);
       }
     });
     // Listen for hike track state changes to update the path on the map
@@ -409,32 +416,6 @@ class _MapScreenState extends State<MapScreen> {
     _annotationManager = await map.annotations.createPointAnnotationManager();
     _lineManager = await map.annotations.createPolylineAnnotationManager();
     _labelManager = await map.annotations.createPointAnnotationManager();
-    _labelManager?.tapEvents(
-      onTap: (annotation) {
-        if (!mounted) return;
-        final lineId = _labelToLine[annotation.id];
-        if (lineId == null) return;
-        _lineTapped = true;
-        final solution = _lineSolutions[lineId];
-        if (solution != null) {
-          context.read<SolutionCubit>().show(solution, lineId: lineId);
-          return;
-        }
-        final pattern = _linePatterns[lineId];
-        final ep = _lineEndpoints[lineId];
-        if (pattern != null && ep != null) {
-          context.read<ShotgunPatternCubit>().show(
-            pattern.result,
-            setup: pattern.setup,
-            shooterLat: ep.sLat,
-            shooterLon: ep.sLon,
-            targetLat: ep.tLat,
-            targetLon: ep.tLon,
-            lineId: lineId,
-          );
-        }
-      },
-    );
     _poiManager = await map.annotations.createPointAnnotationManager();
     _poiManager?.tapEvents(
       onTap: (annotation) {
@@ -467,6 +448,32 @@ class _MapScreenState extends State<MapScreen> {
         }
       },
     );
+    _labelManager?.tapEvents(
+      onTap: (annotation) {
+        if (!mounted) return;
+        final lineId = _labelToLine[annotation.id];
+        if (lineId == null) return;
+        _lineTapped = true;
+        final solution = _lineSolutions[lineId];
+        if (solution != null) {
+          context.read<SolutionCubit>().show(solution, lineId: lineId);
+          return;
+        }
+        final pattern = _linePatterns[lineId];
+        final ep = _lineEndpoints[lineId];
+        if (pattern != null && ep != null) {
+          context.read<ShotgunPatternCubit>().show(
+            pattern.result,
+            setup: pattern.setup,
+            shooterLat: ep.sLat,
+            shooterLon: ep.sLon,
+            targetLat: ep.tLat,
+            targetLon: ep.tLon,
+            lineId: lineId,
+          );
+        }
+      },
+    );
 
     // If location already arrived before map was created, fly now
     if (_locationReady) _flyToUser();
@@ -479,6 +486,12 @@ class _MapScreenState extends State<MapScreen> {
 
     // Load saved POIs
     await _loadSavedPois();
+
+    // Load saved lines for the active profile
+    final ps = context.read<ProfileCubit>().state;
+    if (ps is ProfileLoaded) {
+      await _loadSavedLines(profileId: ps.profile.id);
+    }
   }
 
   Future<void> _registerOverrideLocationIcon() async {
@@ -659,6 +672,18 @@ class _MapScreenState extends State<MapScreen> {
                     tLon: lon,
                   );
                 });
+            _lineService.save(
+              SavedLine(
+                id: line.id,
+                type: SavedLineType.shotgun,
+                profileId: setup.id,
+                shooterLat: shooterLat,
+                shooterLon: shooterLon,
+                targetLat: lat,
+                targetLon: lon,
+                pattern: state.result,
+              ),
+            );
             sub.cancel();
           } else if (state is PatternError) {
             sub.cancel();
@@ -769,6 +794,18 @@ class _MapScreenState extends State<MapScreen> {
                   tLon: lon,
                 );
               });
+          _lineService.save(
+            SavedLine(
+              id: line.id,
+              type: SavedLineType.rifle,
+              profileId: profileState.profile.id,
+              shooterLat: shooterLat,
+              shooterLon: shooterLon,
+              targetLat: lat,
+              targetLon: lon,
+              solution: state.solution,
+            ),
+          );
           sub.cancel();
         } else if (state is SolutionError) {
           sub.cancel();
@@ -814,8 +851,138 @@ class _MapScreenState extends State<MapScreen> {
     _lineSolutions.remove(lineId);
     _linePatterns.remove(lineId);
     _lineEndpoints.remove(lineId);
+    _lineService.delete(lineId);
     context.read<SolutionCubit>().clear();
     context.read<ShotgunPatternCubit>().clear();
+  }
+
+  void _clearAllLines() {
+    for (final group in _annotationGroups.values) {
+      _lineManager?.delete(group.line);
+      if (group.pin != null) _annotationManager?.delete(group.pin!);
+      _labelToLine.remove(group.label.id);
+      _labelManager?.delete(group.label);
+    }
+    _annotationGroups.clear();
+    _labelToLine.clear();
+    _lineSolutions.clear();
+    _linePatterns.clear();
+    _lineEndpoints.clear();
+    context.read<SolutionCubit>().clear();
+    context.read<ShotgunPatternCubit>().clear();
+  }
+
+  Future<void> _loadSavedLines({required String profileId}) async {
+    final allLines = await _lineService.loadAll();
+    final lines = allLines.where((l) => l.profileId == profileId).toList();
+    // Load all profiles so we can look up shotgun setups by ID
+    final allProfiles = await ProfileService().loadProfiles();
+    final setupById = <String, ShotgunSetup>{};
+    for (final p in allProfiles) {
+      if (p is ShotgunSetup) setupById[p.id] = p;
+    }
+    for (final saved in lines) {
+      // Draw pin at target
+      final pin = await _annotationManager?.create(
+        PointAnnotationOptions(
+          geometry: Point(
+            coordinates: Position(saved.targetLon, saved.targetLat),
+          ),
+          iconSize: 1.5,
+          iconImage: 'marker-15',
+        ),
+      );
+
+      // Draw line from shooter to target
+      final isShotgun = saved.type == SavedLineType.shotgun;
+      final line = await _lineManager?.create(
+        PolylineAnnotationOptions(
+          geometry: LineString(
+            coordinates: [
+              Position(saved.shooterLon, saved.shooterLat),
+              Position(saved.targetLon, saved.targetLat),
+            ],
+          ),
+          lineColor: isShotgun
+              ? Colors.orangeAccent.toARGB32()
+              : Colors.red.toARGB32(),
+          lineWidth: isShotgun ? 4.0 : 6.0,
+        ),
+      );
+      if (line == null) continue;
+
+      // Build label text
+      final String label;
+      if (isShotgun && saved.pattern != null) {
+        final r = saved.pattern!;
+        label =
+            '${r.distanceYards.round()} yd / ${r.spreadDiameterInches.toStringAsFixed(0)}" spread';
+      } else if (saved.solution != null) {
+        final s = saved.solution!;
+        label =
+            '${s.rangeYards.round()} / ${s.dropMoa.abs().toStringAsFixed(1)} / ${s.windDriftMoa.abs().toStringAsFixed(1)}';
+      } else {
+        continue;
+      }
+
+      final midLat = (saved.shooterLat + saved.targetLat) / 2;
+      final midLon = (saved.shooterLon + saved.targetLon) / 2;
+      final labelAnnotation = await _labelManager?.create(
+        PointAnnotationOptions(
+          geometry: Point(coordinates: Position(midLon, midLat)),
+          textField: label,
+          textSize: 13,
+          textColor: Colors.white.toARGB32(),
+          textHaloColor: Colors.black.toARGB32(),
+          textHaloWidth: 1.5,
+          textAnchor: TextAnchor.CENTER,
+          iconSize: 0,
+        ),
+      );
+      if (labelAnnotation == null) continue;
+
+      _annotationGroups[line.id] = _AnnotationGroup(
+        line: line,
+        pin: pin,
+        label: labelAnnotation,
+      );
+      _labelToLine[labelAnnotation.id] = line.id;
+      _lineEndpoints[line.id] = (
+        sLat: saved.shooterLat,
+        sLon: saved.shooterLon,
+        tLat: saved.targetLat,
+        tLon: saved.targetLon,
+      );
+
+      if (saved.solution != null) {
+        _lineSolutions[line.id] = saved.solution!;
+      }
+      if (saved.pattern != null) {
+        final setup = setupById[saved.profileId];
+        if (setup != null) {
+          _linePatterns[line.id] = (result: saved.pattern!, setup: setup);
+        }
+      }
+
+      // Remap the Hive-persisted ID → the new Mapbox annotation ID
+      if (saved.id != line.id) {
+        await _lineService.delete(saved.id);
+        await _lineService.save(
+          SavedLine(
+            id: line.id,
+            type: saved.type,
+            profileId: saved.profileId,
+            shooterLat: saved.shooterLat,
+            shooterLon: saved.shooterLon,
+            targetLat: saved.targetLat,
+            targetLon: saved.targetLon,
+            solution: saved.solution,
+            pattern: saved.pattern,
+            createdAt: saved.createdAt,
+          ),
+        );
+      }
+    }
   }
 
   void _openProfileScreen() async {
