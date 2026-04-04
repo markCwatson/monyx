@@ -67,7 +67,7 @@ class _TrackResultScreenState extends State<TrackResultScreen> {
       // Write to temp file and save to gallery
       final tmpDir = await getTemporaryDirectory();
       final tmpFile = File(
-        '${tmpDir.path}/monyx_track_${widget.result.id}.png',
+        '${tmpDir.path}/atlix_track_${widget.result.id}.png',
       );
       await tmpFile.writeAsBytes(pngBytes.buffer.asUint8List());
       await Gal.putImage(tmpFile.path);

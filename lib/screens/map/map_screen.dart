@@ -1116,7 +1116,7 @@ class _MapScreenState extends State<MapScreen> {
               const Icon(Icons.star, color: Colors.orangeAccent, size: 48),
               const SizedBox(height: 12),
               const Text(
-                'Upgrade to Monyx Pro',
+                'Upgrade to Atlix Pro',
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 20,

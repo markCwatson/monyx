@@ -36,7 +36,7 @@
       "localizations" : [
 
       ],
-      "name" : "Monyx Pro",
+      "name" : "Atlix Pro",
       "subscriptions" : [
         {
           "adHocOffers" : [
@@ -45,7 +45,7 @@
           "codeOffers" : [
 
           ],
-          "displayPrice" : "4.99",
+          "displayPrice" : "2.99",
           "familyShareable" : false,
           "groupNumber" : 1,
           "internalID" : "FACEC387",
@@ -57,9 +57,9 @@
               "locale" : "en_US"
             }
           ],
-          "productID" : "monyx_pro_monthly_3",
+          "productID" : "atlix_pro_monthly",
           "recurringSubscriptionPeriod" : "P1M",
-          "referenceName" : "Monyx Pro Monthly",
+          "referenceName" : "Atlix Pro Monthly",
           "subscriptionGroupID" : "70F0B329",
           "type" : "RecurringSubscription",
           "winbackOffers" : [

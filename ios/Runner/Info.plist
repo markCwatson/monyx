@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Monyx</string>
+	<string>Atlix Hunt</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -15,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>monyx</string>
+	<string>atlix</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -50,21 +50,21 @@
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>Monyx uses the camera to photograph animal tracks for species identification.</string>
+	<string>Atlix Hunt uses the camera to photograph animal tracks for species identification.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Monyx accesses your photo library so you can select track images for species identification.</string>
+	<string>Atlix Hunt accesses your photo library so you can select track images for species identification.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Monyx saves annotated track identification images to your photo library.</string>
+	<string>Atlix Hunt saves annotated track identification images to your photo library.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Monyx needs your location to plot you on the map and compute ballistic solutions.</string>
+	<string>Atlix Hunt needs your location to plot you on the map and compute ballistic solutions.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Monyx uses your location to plot you on the map, compute ballistic solutions, and record your hiking path — even when the app is in the background.</string>
+	<string>Atlix Hunt uses your location to plot you on the map, compute ballistic solutions, and record your hiking path — even when the app is in the background.</string>
 	<key>GADApplicationIdentifier</key>
-	<string>ca-app-pub-8357274860394786~6932367408</string>
+	<string>ca-app-pub-8357274860394786~5697764011</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

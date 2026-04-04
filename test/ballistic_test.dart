@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:monyx/ballistics/solver.dart';
-import 'package:monyx/models/rifle_profile.dart';
-import 'package:monyx/models/weather_data.dart';
+import 'package:atlix/ballistics/solver.dart';
+import 'package:atlix/models/rifle_profile.dart';
+import 'package:atlix/models/weather_data.dart';
 
 /// Test profile matching pyballistic's G1 test:
 /// .308 168gr, BC 0.223 G1, MV 2750fps, 2" sight height, zero at 100yd

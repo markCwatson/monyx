@@ -46,12 +46,12 @@ void main() async {
 
   MapboxOptions.setAccessToken(AppConfig.mapboxPublicToken);
 
-  runApp(MonyxApp(subscriptionService: subscriptionService));
+  runApp(AtlixApp(subscriptionService: subscriptionService));
 }
 
-class MonyxApp extends StatelessWidget {
+class AtlixApp extends StatelessWidget {
   final SubscriptionService subscriptionService;
-  const MonyxApp({super.key, required this.subscriptionService});
+  const AtlixApp({super.key, required this.subscriptionService});
 
   @override
   Widget build(BuildContext context) {
@@ -93,7 +93,7 @@ class MonyxApp extends StatelessWidget {
         ),
       ],
       child: MaterialApp(
-        title: 'Monyx',
+        title: 'Atlix Hunt',
         debugShowCheckedModeBanner: false,
         theme: ThemeData.dark().copyWith(
           colorScheme: ColorScheme.fromSeed(

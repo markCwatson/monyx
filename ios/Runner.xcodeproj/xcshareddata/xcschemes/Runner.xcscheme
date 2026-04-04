@@ -74,7 +74,7 @@
          </BuildableReference>
       </BuildableProductRunnable>
       <StoreKitConfigurationFileReference
-         identifier = "../MonyxProducts.storekit">
+         identifier = "../AtlixProducts.storekit">
       </StoreKitConfigurationFileReference>
    </LaunchAction>
    <ProfileAction

@@ -145,7 +145,7 @@ def _query_cpcad_geojson(
         print(f"    Querying offset={offset}...")
         resp = requests.get(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (Monyx land-overlay pipeline)"},
+            headers={"User-Agent": "Mozilla/5.0 (Atlix Hunt land-overlay pipeline)"},
             timeout=120,
         )
         resp.raise_for_status()
@@ -198,7 +198,7 @@ def download() -> None:
         print(f"  URL: {NS_CROWN_URL}")
         resp = requests.get(
             NS_CROWN_URL,
-            headers={"User-Agent": "Mozilla/5.0 (Monyx land-overlay pipeline)"},
+            headers={"User-Agent": "Mozilla/5.0 (Atlix Hunt land-overlay pipeline)"},
             timeout=120,
         )
         resp.raise_for_status()

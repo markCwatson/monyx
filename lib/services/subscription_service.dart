@@ -7,7 +7,7 @@ import 'package:in_app_purchase/in_app_purchase.dart';
 ///
 /// Product ID — register this exact string in App Store Connect and
 /// Google Play Console as an auto-renewable subscription.
-const String kProSubscriptionId = 'monyx_pro_monthly_3';
+const String kProSubscriptionId = 'atlix_pro_monthly';
 
 class SubscriptionService {
   final InAppPurchase _iap = InAppPurchase.instance;

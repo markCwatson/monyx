@@ -1,4 +1,4 @@
-package com.monyx.monyx
+package dev.markcwatson.atlix
 
 import io.flutter.embedding.android.FlutterActivity
 

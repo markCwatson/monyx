@@ -1,7 +1,7 @@
-name: monyx
+name: atlix
 description: 'Offline hunting map + ballistics calculator'
 publish_to: 'none'
-version: 1.0.8+2
+version: 1.0.9+1
 
 environment:
   sdk: ^3.11.3

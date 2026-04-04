@@ -302,7 +302,7 @@ class HikeTrackCubit extends Cubit<HikeTrackState> {
         distanceFilter: 0,
         forceLocationManager: false,
         foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationTitle: 'Monyx — Tracking Hike',
+          notificationTitle: 'Atlix Hunt — Tracking Hike',
           notificationText: 'Recording your path',
           enableWakeLock: true,
         ),

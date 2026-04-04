@@ -2,9 +2,9 @@ import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:monyx/ballistics/pattern_engine.dart';
-import 'package:monyx/models/calibration_record.dart';
-import 'package:monyx/models/shotgun_setup.dart';
+import 'package:atlix/ballistics/pattern_engine.dart';
+import 'package:atlix/models/calibration_record.dart';
+import 'package:atlix/models/shotgun_setup.dart';
 
 /// Default 12 ga Modified choke, #6 Lead, plastic wad, standard ammo.
 final _default12ga = ShotgunSetup(

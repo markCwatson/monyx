@@ -1,10 +1,10 @@
 # tools/ — Model Export Pipeline
 
-This directory contains the Python tooling used to download and convert the [AnimalClue](https://github.com/dahlian00/AnimalClue) YOLOv11 models into TFLite format for on-device inference in the Monyx app.
+This directory contains the Python tooling used to download and convert the [AnimalClue](https://github.com/dahlian00/AnimalClue) YOLOv11 models into TFLite format for on-device inference in the Atlix Hunt app.
 
 ## Background
 
-Monyx includes an **animal track identification** feature that runs entirely on-device. It uses YOLOv11 object-detection models from the [AnimalClue project (ICCV 2025)](https://dahlian00.github.io/AnimalCluePage/) to classify species from photos of animal tracks.
+Atlix Hunt includes an **animal track identification** feature that runs entirely on-device. It uses YOLOv11 object-detection models from the [AnimalClue project (ICCV 2025)](https://dahlian00.github.io/AnimalCluePage/) to classify species from photos of animal tracks.
 
 Two models are used:
 
@@ -85,7 +85,7 @@ The script downloads the weights from HuggingFace (requires internet), converts 
 
 ## Background
 
-Monyx also includes an **on-device plant identification** feature for US and Canada species. Unlike the YOLO-based track detection, this uses an **EfficientNet-Lite0 image classifier** — no bounding boxes, just whole-image classification to identify species from photos of leaves, flowers, bark, fruit, or whole plants.
+Atlix Hunt also includes an **on-device plant identification** feature for US and Canada species. Unlike the YOLO-based track detection, this uses an **EfficientNet-Lite0 image classifier** — no bounding boxes, just whole-image classification to identify species from photos of leaves, flowers, bark, fruit, or whole plants.
 
 ## Pipeline overview
 
@@ -189,7 +189,7 @@ rm -rf data/plants/
 
 ## Background
 
-Monyx shows a toggleable overlay of **public/Crown land boundaries** on the map, colour-coded by managing agency (federal parks, provincial parks, Crown land, wildlife management areas, etc.). This tells hunters at a glance where they can and cannot hunt — uncoloured areas are private land.
+Atlix Hunt shows a toggleable overlay of **public/Crown land boundaries** on the map, colour-coded by managing agency (federal parks, provincial parks, Crown land, wildlife management areas, etc.). This tells hunters at a glance where they can and cannot hunt — uncoloured areas are private land.
 
 Unlike ML models (which are bundled in the app), the land overlay uses **Mapbox's vector tile infrastructure**. Government geospatial data is converted into a Mapbox vector tileset, uploaded to Mapbox Studio, and served from the Mapbox CDN alongside the satellite/streets base map. This means:
 

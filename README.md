@@ -1,4 +1,4 @@
-# monyx
+# atlix
 
 Offline-first hunting map with instant on-map ballistic calculations. Drop a pin on the map, and get scope corrections (elevation + wind) in inches, MOA, and clicks — using your rifle profile, real weather, and terrain elevation.
 
@@ -148,7 +148,7 @@ Ballistics: cubit.compute(..., windSpeedMph, windDirectionDeg) → solver uses o
 ### 1. Clone and install dependencies
 
 ```bash
-git clone <repo-url> && cd monyx
+git clone <repo-url> && cd atlix
 flutter pub get
 ```
 
@@ -354,7 +354,7 @@ Also set via Podfile `post_install`. After linking, Xcode runs `strip` on the bi
 ### Prerequisites
 
 - Active [Apple Developer Program](https://developer.apple.com/programs/) membership ($99/yr)
-- App record created in [App Store Connect](https://appstoreconnect.apple.com) with bundle ID `com.monyx.monyx`
+- App record created in [App Store Connect](https://appstoreconnect.apple.com) with bundle ID `dev.markcwatson.atlix`
 - Xcode signed with your distribution certificate (Runner → Signing & Capabilities → select your team)
 
 ### 1. Bump the build number
@@ -408,7 +408,7 @@ After upload, the build takes ~10–30 minutes to process in App Store Connect:
 
 ## Monetisation
 
-The app is free with ads (AdMob). A "Monyx Pro" monthly subscription removes ads and unlocks additional features.
+The app is free with ads (AdMob). A "Atlix Pro" monthly subscription removes ads and unlocks additional features.
 
 ### Ads (Google AdMob)
 
@@ -416,8 +416,8 @@ Banner ads are shown at the bottom of the map screen for free-tier users.
 
 | Item                       | Value                                                                                      |
 | -------------------------- | ------------------------------------------------------------------------------------------ |
-| **AdMob App ID (iOS)**     | `ca-app-pub-8357274860394786~6932367408`                                                   |
-| **Banner Ad Unit (iOS)**   | `ca-app-pub-8357274860394786/5507605098`                                                   |
+| **AdMob App ID (iOS)**     | `ca-app-pub-8357274860394786~5697764011`                                                   |
+| **Banner Ad Unit (iOS)**   | `ca-app-pub-8357274860394786/3355400651`                                                   |
 | **Test/Release switching** | Automatic — `kReleaseMode` in [lib/services/ad_service.dart](lib/services/ad_service.dart) |
 | **Banner type**            | Anchored adaptive (auto-sizes to device width)                                             |
 
@@ -432,14 +432,14 @@ Banner ads are shown at the bottom of the map screen for free-tier users.
 
 | Item           | Value                                                  |
 | -------------- | ------------------------------------------------------ |
-| **Product ID** | `monyx_pro_monthly_3`                                  |
+| **Product ID** | `atlix_pro_monthly`                                  |
 | **Type**       | Auto-renewable subscription, 1 month                   |
 | **Price**      | $4.99/mo (configure in App Store Connect)              |
 | **Benefits**   | No ads, unlimited rifle/ammo profiles, animal track ID |
 
 The subscription is managed by `SubscriptionService` → `SubscriptionCubit`. Free users see a single profile, a banner ad, and no track ID access. Pro users see a profile list, no ads, and full access to animal track identification.
 
-**For production**, the subscription is configured in **App Store Connect** — you create the product there with the same product ID (`monyx_pro_monthly_3`), set the price, and submit for review. The app code talks to the real App Store automatically; no code changes are needed.
+**For production**, the subscription is configured in **App Store Connect** — you create the product there with the same product ID (`atlix_pro_monthly`), set the price, and submit for review. The app code talks to the real App Store automatically; no code changes are needed.
 
 ### Testing Subscriptions Locally (Xcode StoreKit)
 
@@ -454,15 +454,15 @@ The StoreKit config file must be created inside Xcode (hand-authored JSON won't 
    open ios/Runner.xcworkspace
    ```
 2. **File → New → File** (⌘N) → search for **StoreKit** → select **StoreKit Configuration File** → **Next**.
-3. Name it `MonyxProducts`, set Group to `Runner`, ensure the target is checked → **Create**.
+3. Name it `AtlixProducts`, set Group to `Runner`, ensure the target is checked → **Create**.
 4. In the visual editor, click **+** → **Add Auto-Renewable Subscription**:
-   - **Group name**: `Monyx Pro`
-   - **Reference Name**: `Monyx Pro Monthly`
-   - **Product ID**: `monyx_pro_monthly_3` ← must match exactly
+   - **Group name**: `Atlix Pro`
+   - **Reference Name**: `Atlix Pro Monthly`
+   - **Product ID**: `atlix_pro_monthly` ← must match exactly
    - **Price**: `2.99`
    - **Duration**: `1 Month`
    - Add a display name/description in the Localization section.
-5. Set the scheme to use it: **Product → Scheme → Edit Scheme** (⌘⇧<) → **Run → Options** → **StoreKit Configuration** → select `MonyxProducts.storekit`.
+5. Set the scheme to use it: **Product → Scheme → Edit Scheme** (⌘⇧<) → **Run → Options** → **StoreKit Configuration** → select `AtlixProducts.storekit`.
 
 #### Running with StoreKit
 
@@ -504,7 +504,7 @@ Pro subscribers can identify animal species from photos of tracks (footprints an
 1. Tap the **paw-print button** on the map screen (Pro only — free users see a locked icon with an upgrade prompt).
 2. Choose the trace type: **Footprint** 🐾 or **Scat** 💩.
 3. The camera opens — photograph the track.
-4. Monyx runs a YOLOv11 object-detection model on-device to identify the species.
+4. Atlix Hunt runs a YOLOv11 object-detection model on-device to identify the species.
 5. A **full-screen results page** shows the photo with bounding boxes drawn over detected tracks, plus a ranked list of species predictions with confidence scores.
 6. Results can be **saved** to local storage and **retrieved** later from the saved tracks list.
 
@@ -558,7 +558,7 @@ Pro subscribers can identify plant species from photos — entirely on-device, n
 1. Tap the **🌿 button** on the map screen (Pro only).
 2. Choose the plant part: **Leaf** 🍃, **Flower** 🌸, **Bark** 🌳, **Fruit** 🍎, or **Whole Plant** 🌿.
 3. Take a photo or choose one from gallery.
-4. Monyx runs an EfficientNet-Lite0 classifier on-device.
+4. Atlix Hunt runs an EfficientNet-Lite0 classifier on-device.
 5. Results are **reranked** using your GPS location (US state / Canadian province), current month, and selected plant part.
 6. A **results page** shows the photo and a ranked list of species predictions with confidence scores, common names, and scientific names.
 7. Results can be **saved** and **retrieved** later.
@@ -604,7 +604,7 @@ Pro subscribers can record GPS hike tracks — even with the app in the backgrou
 
 1. Tap the **🥾 hike button** on the map screen (Pro only — free users see a locked icon with an upgrade prompt).
 2. The app requests "always" location permission (needed for background tracking).
-3. **iOS** shows a blue status bar indicator; **Android** shows a persistent notification ("Monyx — Tracking Hike").
+3. **iOS** shows a blue status bar indicator; **Android** shows a persistent notification ("Atlix Hunt — Tracking Hike").
 4. Walk — footstep icons appear along the path on the map in real time.
 5. A **recording banner** at the top of the map shows live distance and elapsed time.
 6. Tap the banner or button to **pause** (stops GPS stream, freezes timer) or **stop** (finishes recording).
@@ -616,7 +616,7 @@ Pro subscribers can record GPS hike tracks — even with the app in the backgrou
 | Platform    | Mechanism                                                                    | User indicator                                   |
 | ----------- | ---------------------------------------------------------------------------- | ------------------------------------------------ |
 | **iOS**     | `AppleSettings(allowBackgroundLocationUpdates: true, activityType: fitness)` | Blue location bar in status area                 |
-| **Android** | `AndroidSettings(foregroundNotificationConfig: ...)`                         | Persistent notification: "Monyx — Tracking Hike" |
+| **Android** | `AndroidSettings(foregroundNotificationConfig: ...)`                         | Persistent notification: "Atlix Hunt — Tracking Hike" |
 
 GPS stream continues when the app is minimized or the screen is locked. No internet required — GPS altitude is used for elevation.
 

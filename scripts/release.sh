@@ -19,7 +19,7 @@ VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //')
 DISPLAY_VERSION=$(echo "$VERSION" | cut -d'+' -f1)
 BUILD_NUMBER=$(echo "$VERSION" | cut -d'+' -f2)
 
-echo "==> Building Monyx $DISPLAY_VERSION ($BUILD_NUMBER)"
+echo "==> Building Atlix Hunt $DISPLAY_VERSION ($BUILD_NUMBER)"
 echo ""
 
 # ── Lint ─────────────────────────────────────────────────────────────────
@@ -57,4 +57,4 @@ else
 fi
 
 echo ""
-echo "✓ Monyx $DISPLAY_VERSION ($BUILD_NUMBER) ready to upload."
+echo "✓ Atlix Hunt $DISPLAY_VERSION ($BUILD_NUMBER) ready to upload."

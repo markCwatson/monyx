@@ -47,7 +47,7 @@ class _PlantResultScreenState extends State<PlantResultScreen> {
 
       final tmpDir = await getTemporaryDirectory();
       final tmpFile = File(
-        '${tmpDir.path}/monyx_plant_${widget.result.id}.png',
+        '${tmpDir.path}/atlix_plant_${widget.result.id}.png',
       );
       await tmpFile.writeAsBytes(pngBytes.buffer.asUint8List());
       await Gal.putImage(tmpFile.path);
