@@ -356,8 +356,9 @@ class _PatternResultScreenState extends State<PatternResultScreen> {
                                     current: _setup.chokeType,
                                     labelOf: (c) => c.label,
                                   );
-                                  if (v != null)
+                                  if (v != null) {
                                     _updateSetup(_setup.copyWith(chokeType: v));
+                                  }
                                 }),
                                 const SizedBox(width: 6),
                                 _setupChip(_setup.shotSize.label, () async {
@@ -389,8 +390,9 @@ class _PatternResultScreenState extends State<PatternResultScreen> {
                                     current: _setup.wadType,
                                     labelOf: (w) => w.label,
                                   );
-                                  if (v != null)
+                                  if (v != null) {
                                     _updateSetup(_setup.copyWith(wadType: v));
+                                  }
                                 }),
                                 const SizedBox(width: 6),
                                 _setupChip(
