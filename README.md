@@ -1,130 +1,40 @@
-# atlix
+# Atlix Hunt
 
-Offline-first hunting map with instant on-map ballistic calculations. Drop a pin on the map, and get scope corrections (elevation + wind) in inches, MOA, and clicks — using your rifle profile, real weather, and terrain elevation.
+Offline-first hunting map + ballistics calculator for iOS and Android. Drop a pin, get scope corrections — using your rifle profile, real weather, and terrain elevation. Everything runs on-device.
 
-## POC Architecture
+## Features
 
-The proof-of-concept is a **pure Flutter app with no backend**. Everything runs on-device:
+| Feature | Free | Pro ($4.99/mo) |
+| --- | --- | --- |
+| Mapbox satellite/topo map + GPS | ✅ | ✅ |
+| Rifle profiles + ballistic solver | 1 profile | Unlimited |
+| Shotgun profiles + pattern estimation | 1 profile | Unlimited |
+| Manual wind entry for ballistics | ✅ | ✅ |
+| Live wind + animated particle overlay | — | ✅ |
+| Animal track/scat ID (YOLOv11) | — | ✅ |
+| Plant ID (EfficientNet-Lite0) | — | ✅ |
+| GPS hike tracking (background) | — | ✅ |
+| Public/Crown land overlay | — | ✅ |
+| Offline map downloads | — | ✅ |
+| Banner ads | Shown | Hidden |
 
-```
-┌─────────────────────────────────────────────┐
-│                 Flutter App                 │
-├──────────┬──────────┬───────────┬───────────┤
-│  Map     │ Profiles │  Weather  │ Ballistics│
-│  Screen  │  Screen  │  Service  │  Engine   │
-├──────────┴──────────┴───────────┴───────────┤
-│  BLoC state management                      │
-├─────────────────────────────────────────────┤
-│  Hive (local cache)    GPS (geolocator)     │
-├─────────────────────────────────────────────┤
-│  Mapbox SDK         Open-Meteo API          │
-└─────────────────────────────────────────────┘
-```
+## Tech Stack
 
-**Core loop:** Launch → GPS plots you on the map → Create a rifle/ammo profile → Long-press to drop a target pin → App computes range, elevation delta, fetches weather → Dart ballistic solver runs on-device → Solution card shows UP/DOWN and LEFT/RIGHT corrections in inches + MOA + clicks.
+| Layer | Tech |
+| --- | --- |
+| UI | Flutter (iOS + Android), single codebase |
+| Maps | Mapbox Maps Flutter SDK (offline support) |
+| State | BLoC / Cubit (`flutter_bloc`) |
+| Local storage | Hive (NoSQL) |
+| GPS | `geolocator` (foreground + background) |
+| Weather / Elevation | Open-Meteo API (free, no key) |
+| Rifle ballistics | Custom Dart 3-DoF RK4 solver (port of pyballistic) |
+| Shotgun patterns | Rayleigh distribution model + OpenCV calibration |
+| ML inference | `tflite_flutter` (YOLOv11n + EfficientNet-Lite0) |
+| Ads | Google AdMob (banner, adaptive) |
+| IAP | `in_app_purchase` (StoreKit / Google Play) |
 
-### Key tech choices
-
-| Layer         | Tech                           | Why                                             |
-| ------------- | ------------------------------ | ----------------------------------------------- |
-| UI framework  | Flutter (iOS + Android)        | Single codebase, native performance             |
-| Maps          | Mapbox Maps Flutter SDK        | Official offline support, satellite imagery     |
-| State         | BLoC pattern (`flutter_bloc`)  | Predictable state, testable, industry standard  |
-| Local storage | Hive                           | Fast NoSQL cache, no native deps, works offline |
-| GPS           | `geolocator`                   | Cross-platform location with background support |
-| Weather       | Open-Meteo API                 | Free, no API key for dev, worldwide coverage    |
-| Ballistics    | Custom Dart solver (on-device) | Works fully offline, point-mass 3-DoF model     |
-
-## Ballistic Engine
-
-The solver is a pure-Dart port of [pyballistic](https://github.com/dbookstaber/pyballistic) (py-ballisticcalc), a well-tested open-source ballistic calculator. All calculations run on-device with no network required.
-
-### Algorithm
-
-| Component                | Detail                                                                                          |
-| ------------------------ | ----------------------------------------------------------------------------------------------- |
-| **Model**                | Point-mass 3-DoF (x = downrange, y = drop, z = windage)                                         |
-| **Integrator**           | Classic RK4, fixed time step 0.0025 s                                                           |
-| **Drag tables**          | Standard G1 (80 entries) and G7 (84 entries), Cd vs Mach                                        |
-| **Drag interpolation**   | PCHIP (monotone cubic Hermite, Fritsch-Carlson slopes) — C1 continuous, shape-preserving        |
-| **Standard Drag Factor** | `Cd(mach) × 2.08551e-04 / BC` where the constant = ρ₀ × π / (4 × 2 × 144), ρ₀ = 0.076474 lb/ft³ |
-| **Air density**          | CIPM-2007 formula — saturation vapour pressure, enhancement factor, compressibility factor      |
-| **Altitude correction**  | Lapse-rate model (−0.0019812 K/ft) updates density ratio and Mach at each integration step      |
-| **Speed of sound**       | 49.0223 × √(°R) ft/s                                                                            |
-| **Zero-finding**         | Ridder's method (guaranteed convergence, ~60 iterations max)                                    |
-| **Gravity**              | 32.17405 ft/s²                                                                                  |
-
-### How a shot is solved
-
-1. **Build atmosphere** — station temperature, pressure, humidity → CIPM-2007 air density in kg/m³ → density ratio (local / standard 1.225 kg/m³).
-2. **Find zero angle** — under ICAO standard atmosphere, find the bore elevation (via Ridder's method) that puts the bullet at y = 0 at the zero range.
-3. **Add shot angle** — if the target has an elevation difference (from DEM), the look angle is added to the zero angle.
-4. **Run trajectory** — RK4 integration with altitude-dependent density and Mach. At each step: compute `k_m = density_ratio × drag_by_mach(speed/Mach)` once, then evaluate four sub-step accelerations (gravity + drag opposing air-relative velocity). Wind is a constant headwind/crosswind vector subtracted from ground velocity.
-5. **Measure drop** — the line-of-sight from scope (at sight height) to target (at elevation offset) is computed at the bullet's final x position. Drop = bullet y − LOS y. Windage = bullet z.
-6. **Convert** — drop/drift in inches → MOA → clicks, plus velocity, energy, and time of flight.
-
-### Test data
-
-The solver is validated against pyballistic's reference trajectories:
-
-| Profile                                | Range   | Velocity | Drop   | Source                   |
-| -------------------------------------- | ------- | -------- | ------ | ------------------------ |
-| .308 168gr BC 0.223 G1, MV 2750, 2" SH | 100 yd  | 2351 fps | 0"     | pyballistic test_path_g1 |
-| .308 168gr BC 0.223 G1, MV 2750, 2" SH | 500 yd  | 1169 fps | −87.9" | pyballistic test_path_g1 |
-| .308 168gr BC 0.223 G1, MV 2750, 2" SH | 1000 yd | 776 fps  | −824"  | pyballistic test_path_g1 |
-| .308 168gr BC 0.223 G7, MV 2750, 2" SH | 100 yd  | 2545 fps | 0"     | pyballistic test_path_g7 |
-| .308 168gr BC 0.223 G7, MV 2750, 2" SH | 500 yd  | 1814 fps | −56.2" | pyballistic test_path_g7 |
-| .308 168gr BC 0.223 G7, MV 2750, 2" SH | 1000 yd | 1086 fps | −400"  | pyballistic test_path_g7 |
-
-Tolerances: velocity ±15 fps, drop ±3" (500 yd) / ±10" (1000 yd).
-
-## Wind Overlay
-
-Animated wind particle overlay on the map with manual entry for free users and live weather + animation for Pro.
-
-### Free vs Pro
-
-| Capability                              | Free | Pro |
-| --------------------------------------- | ---- | --- |
-| Manual wind entry (speed + direction)   | ✅   | ✅  |
-| Wind used in ballistic calculations     | ✅   | ✅  |
-| Wind speed badge on map                 | ✅   | ✅  |
-| Live wind from Open-Meteo API           | —    | ✅  |
-| Animated particle overlay (Windy-style) | —    | ✅  |
-| Pick location on map                    | —    | ✅  |
-| Forecast wind (date/time picker)        | —    | ✅  |
-| Saved weather profiles (Hive, offline)  | —    | ✅  |
-
-### Technical details
-
-| Component                  | Detail                                                                                                                                                                             |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Particle system**        | ~600 particles at 60fps via `CustomPainter` + `Ticker`, trailing lines with fade envelope                                                                                          |
-| **Weather API**            | Open-Meteo current + hourly forecast (wind speed + direction at 10m, free for non-commercial)                                                                                      |
-| **Ballistics integration** | When wind is set (manual or live), `SolutionCubit.compute()` overrides the API weather's wind fields via `WeatherData.withWind()` so the solution card and wind badge always agree |
-| **Offline profiles**       | Each live fetch is auto-saved to Hive; dedicated Saved Weather screen for viewing, applying, or deleting                                                                           |
-
-### Data flow
-
-```
-Wind button tap → _showWindSheet()
-  ├─ Enter Manually (free) → speed + direction dialog → _applyManualWind() → no animation
-  ├─ Now (GPS, Pro) → fetchWeather() → UniformWindField → particles
-  ├─ Now (pick, Pro) → tap map → fetchWeather() → particles
-  ├─ Later (Pro) → date/time picker → tap map → fetchWindForecast() → particles
-  └─ Saved (Pro) → Hive → WeatherProfile → particles (offline)
-
-Ballistics: cubit.compute(..., windSpeedMph, windDirectionDeg) → solver uses overlay/manual wind
-```
-
-### What the POC deliberately skips
-
-- No backend / no auth / no sync
-- No land ownership overlays
-- No offline map downloads
-- No MIL output (inches + MOA + clicks only)
-- No shot history
-- Imperial units only
+Bundle ID: `dev.markcwatson.atlix`
 
 ## Dev Environment Setup (macOS)
 
@@ -223,7 +133,7 @@ flutter analyze
 
 ```bash
 flutter test                                    # All tests
-flutter test test/ballistics_test.dart              # Ballistics solver tests only
+flutter test test/ballistics_test.dart          # Ballistics solver tests only
 flutter test test/pattern_engine_test.dart      # Shotgun pattern engine tests only
 ```
 
@@ -304,7 +214,7 @@ flutter build ios --dart-define-from-file=.env              # iOS archive
 flutter build apk --dart-define-from-file=.env              # Android APK
 ```
 
-### 4. Android SDK note
+### Android SDK note
 
 Flutter 3.41+ requires Android SDK 36. If `flutter doctor` complains:
 
@@ -313,447 +223,24 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 $HOME/Library/Android/sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0"
 ```
 
-## TFLite on iOS — Symbol Stripping Workaround
-
-### The problem
-
-The `tflite_flutter` plugin uses Dart FFI (`dlsym(RTLD_DEFAULT, "TfLiteModelCreate")`) to call TensorFlowLiteC at runtime. On iOS, TensorFlowLiteC v2.12.0 ships as a **static library** for device (arm64) but a **dynamic framework** for the simulator. When statically linked, no Swift/ObjC code in the app references the TFLite C symbols directly — only Dart does, at runtime. The iOS linker and strip tool can't see runtime `dlsym` calls, so they dead-strip and remove the symbols from the release binary. The result: TFLite works on the simulator (dynamic framework → symbols always available) but crashes on physical devices with:
-
-```
-Failed to lookup symbol 'TfLiteModelCreate': dlsym(RTLD_DEFAULT, TfLiteModelCreate): symbol not found
-```
-
-### The fix (three parts)
-
-All three are required. Removing any one of them causes the symbols to be stripped.
-
-#### 1. `ios/Runner/KeepTfLiteSymbols.m`
-
-A native ObjC file that references TFLite C API functions with `__attribute__((used))`. This creates compile-time references so the linker pulls the symbols from the static library into the binary. The function is never called — its existence is what matters.
-
-#### 2. `DEAD_CODE_STRIPPING = NO` on the Runner target
-
-Set via the Podfile `post_install` block (not globally on pods). Prevents the linker from removing "unreachable" code paths within the static library.
-
-#### 3. `STRIP_STYLE = non-global` on the Runner target
-
-Also set via Podfile `post_install`. After linking, Xcode runs `strip` on the binary. The default strip style removes global symbols. `non-global` keeps them, so `dlsym()` can find `TfLiteModelCreate` at runtime.
-
-**Important:** These settings must only be applied to the **Runner target**, not to all pod targets. Applying `STRIP_STYLE` globally (e.g., in `installer.pods_project.targets`) causes pod frameworks like `objective_c.framework` to retain simulator platform tags, which fails App Store validation.
-
-### What didn't work
-
-| Approach                                                                   | Why it failed                                                                                                          |
-| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `DynamicLibrary.open('TensorFlowLiteC.framework/TensorFlowLiteC')` in Dart | Works on simulator (dynamic framework) but the framework file doesn't exist on device (static lib)                     |
-| `-Wl,-u,_TfLiteModelCreate` in `OTHER_LDFLAGS`                             | Tells the linker the symbol is needed, but post-link `strip` still removes it                                          |
-| `STRIP_STYLE = non-global` on all targets via Podfile                      | Preserves symbols but also preserves simulator platform tags in pod frameworks → Xcode distribution validation failure |
-
-## Deploy to App Store Connect
-
-### Prerequisites
-
-- Active [Apple Developer Program](https://developer.apple.com/programs/) membership ($99/yr)
-- App record created in [App Store Connect](https://appstoreconnect.apple.com) with bundle ID `dev.markcwatson.atlix`
-- Xcode signed with your distribution certificate (Runner → Signing & Capabilities → select your team)
-
-### 1. Bump the build number
-
-Each upload requires a unique build number. Increment the `+N` portion in `pubspec.yaml`:
-
-```yaml
-version: 1.0.0+3 # +N must be higher than the last uploaded build
-```
-
-### 2. Build the release archive
-
-```bash
-flutter clean
-flutter pub get
-flutter build ipa --release --dart-define-from-file=.env
-```
-
-This produces an `.xcarchive` in `build/ios/archive/` and an `.ipa` in `build/ios/ipa/`.
-
-### 3. Upload via Xcode
-
-```bash
-open build/ios/archive/Runner.xcarchive
-```
-
-This opens the Xcode **Organizer** window:
-
-1. Select the archive and click **Distribute App**
-2. Choose **App Store Connect** → **Upload**
-3. Follow the signing and validation prompts
-4. Wait for the upload to complete
-
-### 4. TestFlight
-
-After upload, the build takes ~10–30 minutes to process in App Store Connect:
-
-1. Go to **App Store Connect → TestFlight**
-2. Answer the **Export Compliance** question (select "No" if the app only uses HTTPS)
-3. **Internal testers** (up to 100) — available immediately, no review needed
-4. **External testers** (up to 10,000) — requires a brief Beta App Review
-
-### 5. Submit for App Store review
-
-1. In App Store Connect, go to your app → **App Store** tab
-2. Fill in screenshots, description, keywords, promotional text, privacy policy URL, and support URL
-3. Select the build from your TestFlight uploads
-4. Click **Submit for Review**
-
-> **Important:** The Mapbox public token is baked in at compile time via `--dart-define-from-file=.env`. If you build or archive from Xcode directly (without the Flutter CLI), the token will be empty and the map will show a black screen. Always use `flutter build ipa` first.
-
-## Monetisation
-
-The app is free with ads (AdMob). A "Atlix Pro" monthly subscription removes ads and unlocks additional features.
-
-### Ads (Google AdMob)
-
-Banner ads are shown at the bottom of the map screen for free-tier users.
-
-| Item                       | Value                                                                                      |
-| -------------------------- | ------------------------------------------------------------------------------------------ |
-| **AdMob App ID (iOS)**     | `ca-app-pub-8357274860394786~5697764011`                                                   |
-| **Banner Ad Unit (iOS)**   | `ca-app-pub-8357274860394786/3355400651`                                                   |
-| **Test/Release switching** | Automatic — `kReleaseMode` in [lib/services/ad_service.dart](lib/services/ad_service.dart) |
-| **Banner type**            | Anchored adaptive (auto-sizes to device width)                                             |
-
-**How it works:**
-
-- Debug / simulator builds use Google's test ad unit ID → shows a "Test Ad" label, safe to tap.
-- Release builds (`flutter build ipa`) use the real ad unit ID → real ads served.
-- The App ID in `ios/Runner/Info.plist` (`GADApplicationIdentifier`) is always the real one — only ad _unit_ IDs switch.
-- Pro subscribers never see ads — the banner is not loaded when `SubscriptionCubit` reports `SubscriptionPro`.
-
-### Subscription (In-App Purchase)
-
-| Item           | Value                                                  |
-| -------------- | ------------------------------------------------------ |
-| **Product ID** | `atlix_pro_monthly`                                  |
-| **Type**       | Auto-renewable subscription, 1 month                   |
-| **Price**      | $4.99/mo (configure in App Store Connect)              |
-| **Benefits**   | No ads, unlimited rifle/ammo profiles, animal track ID |
-
-The subscription is managed by `SubscriptionService` → `SubscriptionCubit`. Free users see a single profile, a banner ad, and no track ID access. Pro users see a profile list, no ads, and full access to animal track identification.
-
-**For production**, the subscription is configured in **App Store Connect** — you create the product there with the same product ID (`atlix_pro_monthly`), set the price, and submit for review. The app code talks to the real App Store automatically; no code changes are needed.
-
-### Testing Subscriptions Locally (Xcode StoreKit)
-
-Xcode's StoreKit Configuration lets you simulate purchases **locally in the simulator** without an App Store Connect account or sandbox tester. This is **only for development/testing** — it has no effect on production builds.
-
-#### One-time setup
-
-The StoreKit config file must be created inside Xcode (hand-authored JSON won't work reliably):
-
-1. Open the Xcode workspace:
-   ```bash
-   open ios/Runner.xcworkspace
-   ```
-2. **File → New → File** (⌘N) → search for **StoreKit** → select **StoreKit Configuration File** → **Next**.
-3. Name it `AtlixProducts`, set Group to `Runner`, ensure the target is checked → **Create**.
-4. In the visual editor, click **+** → **Add Auto-Renewable Subscription**:
-   - **Group name**: `Atlix Pro`
-   - **Reference Name**: `Atlix Pro Monthly`
-   - **Product ID**: `atlix_pro_monthly` ← must match exactly
-   - **Price**: `2.99`
-   - **Duration**: `1 Month`
-   - Add a display name/description in the Localization section.
-5. Set the scheme to use it: **Product → Scheme → Edit Scheme** (⌘⇧<) → **Run → Options** → **StoreKit Configuration** → select `AtlixProducts.storekit`.
-
-#### Running with StoreKit
-
-**Important:** `flutter run` does not apply Xcode scheme settings. To test IAP you must launch from Xcode:
-
-1. First, generate the dart-define config (only needed when `.env` changes):
-   ```bash
-   flutter run --dart-define-from-file=.env
-   ```
-   Then stop the app (`q`).
-2. In Xcode, press **⌘R** to build and run. Xcode applies the StoreKit config at launch.
-3. In the app, tap the FAB (profile button) → tap the **★ Upgrade to Pro** banner → tap **Subscribe**.
-4. Xcode's StoreKit test environment handles the purchase immediately — no Apple ID needed.
-5. The app should hide the banner ad and unlock unlimited profiles.
-
-For everything else (map, ballistics, ads), `flutter run --dart-define-from-file=.env` works fine.
-
-#### Manage test transactions
-
-In Xcode: **Debug → StoreKit → Manage Transactions**. From here you can:
-
-- **Approve / decline** pending transactions
-- **Refund** a purchase (test the downgrade flow)
-- **Delete** all transactions (reset to free tier)
-- **Force renewal** to simulate a subscription renewing
-
-#### Expire or cancel
-
-In the transaction manager, select the subscription and click **Cancel Subscription** or **Request Refund** to test what happens when a user downgrades.
-
-> **Note:** The `.storekit` file is only for local testing. It has no secrets and no effect on production. Real subscriptions are managed entirely in App Store Connect.
-
-## Animal Track Identification
-
-Pro subscribers can identify animal species from photos of tracks (footprints and scat) directly on-device — no internet required.
-
-### How it works
-
-1. Tap the **paw-print button** on the map screen (Pro only — free users see a locked icon with an upgrade prompt).
-2. Choose the trace type: **Footprint** 🐾 or **Scat** 💩.
-3. The camera opens — photograph the track.
-4. Atlix Hunt runs a YOLOv11 object-detection model on-device to identify the species.
-5. A **full-screen results page** shows the photo with bounding boxes drawn over detected tracks, plus a ranked list of species predictions with confidence scores.
-6. Results can be **saved** to local storage and **retrieved** later from the saved tracks list.
-
-### Models
-
-The feature uses [AnimalClue](https://dahlian00.github.io/AnimalCluePage/) (ICCV 2025) YOLOv11n models, converted to TFLite for on-device inference:
-
-| Model     | Species | Input       | Size   | Source                                                                          |
-| --------- | ------- | ----------- | ------ | ------------------------------------------------------------------------------- |
-| Footprint | 117     | 640×640 RGB | ~10 MB | [risashinoda/footprint_yolo](https://huggingface.co/risashinoda/footprint_yolo) |
-| Feces     | 101     | 640×640 RGB | ~10 MB | [risashinoda/feces_yolo](https://huggingface.co/risashinoda/feces_yolo)         |
-
-Both models are bundled in the app binary under `assets/models/`. Total added size is ~20 MB.
-
-### Inference pipeline
-
-1. **Capture** — `image_picker` opens the camera and returns a JPEG.
-2. **Preprocess** — Image is resized to 640×640 and converted to a float32 NHWC tensor `[1, 640, 640, 3]` with pixel values normalised to `[0, 1]`.
-3. **Infer** — `tflite_flutter` runs the model, producing `[1, C, 8400]` where `C = 4 + num_classes`.
-4. **Post-process** — Confidence thresholding (0.25), coordinate scaling back to original image dimensions, and Non-Maximum Suppression (IoU 0.45) to remove duplicate boxes.
-5. **Display** — Bounding boxes are drawn on the photo with colour-coded confidence (green ≥70%, amber ≥40%, red below). Species names and confidence percentages are shown.
-
-### Model export
-
-The TFLite models are generated from the original PyTorch weights using a Python pipeline in `tools/`. See [tools/README.md](tools/README.md) for full reproduction instructions.
-
-```bash
-python3 -m venv tools/.venv
-source tools/.venv/bin/activate
-pip install -r tools/requirements.txt
-python tools/export_models.py
-```
-
-### Architecture
-
-| Component   | File                                       | Role                                                         |
-| ----------- | ------------------------------------------ | ------------------------------------------------------------ |
-| Detector    | `lib/services/track_detector.dart`         | Loads TFLite model, runs inference, returns `Detection` list |
-| Persistence | `lib/services/track_service.dart`          | Saves/loads track results + images via Hive                  |
-| State       | `lib/blocs/track_cubit.dart`               | Manages capture → detect → save flow                         |
-| Results UI  | `lib/screens/track_result_screen.dart`     | Annotated image + ranked species list                        |
-| Saved list  | `lib/screens/saved_tracks_screen.dart`     | Browse and revisit past identifications                      |
-| Overlay     | `lib/widgets/detection_image_painter.dart` | Draws bounding boxes on the photo                            |
-
-## Plant Identification
-
-Pro subscribers can identify plant species from photos — entirely on-device, no internet required. Supports US and Canada species.
-
-### How it works
-
-1. Tap the **🌿 button** on the map screen (Pro only).
-2. Choose the plant part: **Leaf** 🍃, **Flower** 🌸, **Bark** 🌳, **Fruit** 🍎, or **Whole Plant** 🌿.
-3. Take a photo or choose one from gallery.
-4. Atlix Hunt runs an EfficientNet-Lite0 classifier on-device.
-5. Results are **reranked** using your GPS location (US state / Canadian province), current month, and selected plant part.
-6. A **results page** shows the photo and a ranked list of species predictions with confidence scores, common names, and scientific names.
-7. Results can be **saved** and **retrieved** later.
-
-### Model
-
-| Model | Species | Input       | Size     | Architecture       |
-| ----- | ------- | ----------- | -------- | ------------------ |
-| Plant | 200–500 | 224×224 RGB | ~5–15 MB | EfficientNet-Lite0 |
-
-The model is trained on iNaturalist research-grade observations filtered to US + Canada plants. See [tools/README.md](tools/README.md) for the full training and export pipeline.
-
-### Phase 2: Metadata Reranking
-
-Raw classifier predictions are reranked using bundled species metadata:
-
-- **Region**: species present in user's state/province get a 1.5× boost; absent species get 0.2×
-- **Season**: species visible in the current month get 1.3×; off-season species get 0.5×
-- **Plant part**: species with strong identifiers for the selected part get 1.2×
-
-Formula: `finalScore = modelScore × regionWeight × seasonWeight × partWeight`
-
-Region lookup is fully offline — uses a bundled US state / Canadian province bounding-box table.
-
-### Architecture
-
-| Component   | File                                   | Role                                                         |
-| ----------- | -------------------------------------- | ------------------------------------------------------------ |
-| Classifier  | `lib/services/plant_classifier.dart`   | Loads TFLite model, runs classification, returns predictions |
-| Reranker    | `lib/services/plant_reranker.dart`     | Metadata-based reranking (region, season, plant part)        |
-| Region      | `lib/services/region_lookup.dart`      | Offline GPS → US state / CA province resolver                |
-| Persistence | `lib/services/plant_service.dart`      | Saves/loads plant results + images via Hive                  |
-| State       | `lib/blocs/plant_cubit.dart`           | Manages capture → classify → rerank → save flow              |
-| Results UI  | `lib/screens/plant_result_screen.dart` | Photo + ranked species list with confidence bars             |
-| Saved list  | `lib/screens/saved_plants_screen.dart` | Browse and revisit past identifications                      |
-| Metadata    | `lib/models/plant_metadata.dart`       | Species metadata model (regions, months, parts, toxicity)    |
-
-## Hike Tracking
-
-Pro subscribers can record GPS hike tracks — even with the app in the background. Points are saved only when the user moves ≥2 m from the previous point (haversine filter), keeping storage minimal while maintaining path fidelity.
-
-### How it works
-
-1. Tap the **🥾 hike button** on the map screen (Pro only — free users see a locked icon with an upgrade prompt).
-2. The app requests "always" location permission (needed for background tracking).
-3. **iOS** shows a blue status bar indicator; **Android** shows a persistent notification ("Atlix Hunt — Tracking Hike").
-4. Walk — footstep icons appear along the path on the map in real time.
-5. A **recording banner** at the top of the map shows live distance and elapsed time.
-6. Tap the banner or button to **pause** (stops GPS stream, freezes timer) or **stop** (finishes recording).
-7. On stop, a **summary sheet** shows: total distance (mi + km), active time, elevation gain/loss (ft + m), average pace. Name the hike and save it.
-8. Saved hikes can be **recalled** from the history menu — the path renders on the map with a summary card.
-
-### Background tracking
-
-| Platform    | Mechanism                                                                    | User indicator                                   |
-| ----------- | ---------------------------------------------------------------------------- | ------------------------------------------------ |
-| **iOS**     | `AppleSettings(allowBackgroundLocationUpdates: true, activityType: fitness)` | Blue location bar in status area                 |
-| **Android** | `AndroidSettings(foregroundNotificationConfig: ...)`                         | Persistent notification: "Atlix Hunt — Tracking Hike" |
-
-GPS stream continues when the app is minimized or the screen is locked. No internet required — GPS altitude is used for elevation.
-
-### Data filtering
-
-- **Haversine threshold**: New point saved only if ≥2 m from previous point. Filters GPS jitter without losing path detail.
-- **Elevation dead-band**: Altitude changes < 2 m are ignored when computing gain/loss, reducing GPS altitude noise.
-- **Pause/resume**: Paused intervals are excluded from active duration. GPS stream is cancelled during pause to save battery.
-
-### Units
-
-Distances and elevation are shown in dual units — imperial primary with metric in parentheses (e.g., "1.2 mi (1.9 km)", "325 ft (99 m)").
-
-### Architecture
-
-| Component   | File                                        | Role                                               |
-| ----------- | ------------------------------------------- | -------------------------------------------------- |
-| Model       | `lib/models/hike_track.dart`                | HikePoint + HikeTrack data classes with JSON       |
-| Persistence | `lib/services/hike_track_service.dart`      | Hive-based save/load/delete for hike tracks        |
-| State       | `lib/blocs/hike_track_cubit.dart`           | Recording state machine with background GPS stream |
-| Map path    | `lib/screens/map_screen.dart`               | GeoJSON source + footstep symbol layer on Mapbox   |
-| Saved list  | `lib/screens/saved_hike_tracks_screen.dart` | Browse and revisit past hikes                      |
-| Haversine   | `lib/ballistics/conversions.dart`           | `haversineMeters()` for 2 m threshold check        |
-
-## Shotgun Pattern Estimation
-
-Users can create shotgun profiles alongside rifle profiles. Select a shotgun setup (gauge, choke, load, wad type), drop a pin on the map, and see an estimated pellet pattern at the computed distance. Pro subscribers can calibrate predictions with real patterning-board photos analysed on-device via OpenCV.
-
-### How it works
-
-1. **Create profile** — Tap the profile button → **Add** → select **Shotgun** → fill in gauge, choke, load details, pellet count, wad type, and ammo spread class.
-2. **Predict** — Long-press the map to drop a pin. The app computes haversine distance from your GPS position to the pin and displays the predicted pattern at that range.
-3. **Visualise** — A full-screen pattern view shows concentric circles (spread edge, R75, R50, 20" and 10" reference circles) with simulated pellet dots, plus metric pills (spread diameter, R50, R75, pellets in 10"/20" circles).
-4. **Adjust distance** — A slider (5–60 yds) lets you explore different ranges; the pattern updates live.
-5. **Calibrate (Pro)** — Tap "Calibrate from Photo", follow the instructions (fire one shot at a 24"×24" white sheet from 20 yds), take a photo, and the app analyses it on-device. A before/after comparison lets you accept or discard the calibration.
-6. **Improve over time** — Each accepted calibration is blended into the setup's stored record using an exponential moving average, progressively refining predictions.
-
-### Free vs Pro
-
-| Capability                                | Free | Pro |
-| ----------------------------------------- | ---- | --- |
-| Shotgun profile creation                  | ✅   | ✅  |
-| Pattern prediction (any distance)         | ✅   | ✅  |
-| Pattern visualisation + distance slider   | ✅   | ✅  |
-| Photo-based calibration                   | —    | ✅  |
-| Calibration history (cumulative blending) | —    | ✅  |
-
-### Pattern Engine
-
-The prediction engine uses a Rayleigh distribution model:
-
-| Component              | Detail                                                                          |
-| ---------------------- | ------------------------------------------------------------------------------- |
-| **Spread diameter**    | `chokeBaseRate × distance × wadModifier × ammoModifier × calDiameterMultiplier` |
-| **Base rates (in/yd)** | Cylinder 1.0, Skeet 0.9, IC 0.8, Modified 0.7, IM 0.6, Full 0.5, Extra Full 0.4 |
-| **Wad modifiers**      | Plastic 0.90, Fiber 1.15                                                        |
-| **Ammo spread class**  | Tight 0.85, Standard 1.00, Wide 1.20                                            |
-| **R50**                | 35% of spread radius (heuristic) × calSigmaMultiplier                           |
-| **Rayleigh σ**         | `R50 / √(ln 4)`                                                                 |
-| **R75**                | `σ × √(2 ln 4)` = R50 × √2                                                      |
-| **Pellets in circle**  | `totalPellets × (1 - exp(-r² / 2σ²))` (Rayleigh CDF)                            |
-
-### Calibration Pipeline (opencv_dart)
-
-Photo calibration uses `opencv_dart` (dartcv4) to analyse patterning-board photos entirely on-device:
-
-1. **Decode** — `imdecode` from camera JPEG bytes.
-2. **Page detection** — Grayscale → Gaussian blur → adaptive threshold → `findContours` (external) → `approxPolyDP` to find the largest quadrilateral (≥5% of image area).
-3. **Perspective rectification** — `getPerspectiveTransform` + `warpPerspective` to a 720×720 px square (30 px/inch for 24" sheet).
-4. **Pellet detection** — Invert → Otsu threshold → morphological open (elliptical kernel) → `connectedComponentsWithStats` → filter by area (4–250 px²).
-5. **Metrics** — Centroid (POI offset), radial sort for R50/R75, pellets in 10"/20" circles, edge clipping likelihood, confidence score.
-6. **Blending** — New session is merged into the stored `CalibrationRecord` via exponential moving average weighted by session confidence.
-
-### Architecture
-
-| Component          | File                                           | Role                                                                                      |
-| ------------------ | ---------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Model              | `lib/models/shotgun_setup.dart`                | ShotgunSetup + enums (Gauge, ChokeType, ShotCategory, ShotSize, WadType, AmmoSpreadClass) |
-| Calibration data   | `lib/models/calibration_record.dart`           | Stored calibration multipliers per setup                                                  |
-| Session data       | `lib/models/calibration_session.dart`          | Single photo analysis output (metrics + pellet coordinates)                               |
-| Result data        | `lib/models/pattern_result.dart`               | Prediction output (spread, R50, R75, pellet counts, POI)                                  |
-| Engine             | `lib/ballistics/pattern_engine.dart`           | Rayleigh distribution prediction math                                                     |
-| CV pipeline        | `lib/services/pattern_calibrator.dart`         | opencv_dart page detection + pellet detection                                             |
-| Persistence        | `lib/services/shotgun_service.dart`            | Hive-based save/load for calibration records + session history                            |
-| State              | `lib/blocs/shotgun_pattern_cubit.dart`         | Predict, analyse photo, accept/discard calibration                                        |
-| Pattern viz        | `lib/widgets/pattern_painter.dart`             | CustomPainter rendering concentric circles + simulated pellets                            |
-| Calibration viz    | `lib/widgets/calibration_preview_painter.dart` | CustomPainter rendering detected pellet positions                                         |
-| Result screen      | `lib/screens/pattern_result_screen.dart`       | Pattern visualisation + metrics + distance slider + calibrate button                      |
-| Calibration screen | `lib/screens/calibration_result_screen.dart`   | Before/after comparison + accept/discard                                                  |
-| Profile form       | `lib/screens/profile_screen.dart`              | Unified rifle/shotgun profile editor (weapon type selector)                               |
-
-### Effective Range
-
-A red dashed circle on the map shows the **effective hunting range** for the selected shotgun profile and game animal. The user picks a game target (e.g. Deer, Duck, Turkey) in the profile editor; the circle updates automatically.
-
-#### Game targets
-
-Each `GameTarget` defines three thresholds:
-
-| Target            | Min pellet energy (ft-lbs) | Vital zone ∅ (in) | Min vital energy (ft-lbs) |
-| ----------------- | -------------------------: | ----------------: | ------------------------: |
-| Dove / Quail      |                        3.5 |               2.5 |                       3.0 |
-| Duck / Teal       |                        3.0 |               4.0 |                       5.0 |
-| Pheasant          |                        3.0 |               4.0 |                       5.0 |
-| Goose             |                        3.0 |               5.0 |                       8.0 |
-| Turkey            |                        1.0 |               3.0 |                      15.0 |
-| Rabbit / Squirrel |                        3.5 |               3.0 |                       3.0 |
-| Coyote            |                       35.0 |               7.0 |                      60.0 |
-| Deer              |                       35.0 |              10.0 |                     300.0 |
-| Hog               |                       40.0 |               8.0 |                     350.0 |
-
-- **Min pellet energy** — per-pellet kinetic energy floor for adequate penetration. High for buckshot targets (deer, hog, coyote) because the pellet must reach vitals through hide and muscle. Low for birdshot targets where small pellets suffice.
-- **Vital zone diameter** — approximate cross-section of the animal's lethal target area.
-- **Min vital energy** — total kinetic energy that must be delivered inside the vital zone. For large game (deer, hog) this is hundreds of ft-lbs; for birds a few ft-lbs is sufficient.
-
-#### Algorithm
-
-The effective range is the **minimum** of two independently computed limits:
-
-1. **Energy-limited range** — binary search for the farthest distance where a single pellet still carries ≥ `minPelletEnergyFtLbs`. Pellet velocity decays via an exponential drag model: `v(x) = v₀ × exp(−x / (BC × 6000))`, where BC is approximated as `mass_lbs / (d² × 1.5)` for a spherical projectile.
-
-2. **Confidence-limited range** — binary search for the farthest distance where, with **≥ 80 % probability**, enough pellets strike the vital zone to deliver `minVitalEnergyFtLbs` total. This uses a binomial survival function: `P(X ≥ k) where X ~ Binomial(n, p)`, with:
-   - `n` = pellet count
-   - `p` = probability a single pellet hits the vital circle, computed from the Rayleigh CDF (same σ model as the Pattern Engine)
-   - `k` = ⌈minVitalEnergyFtLbs / pelletEnergy⌉ — the minimum number of pellets needed
-
-Both binary searches converge to within 0.5 yards over a 0–300 yard domain.
-
-#### Verified ranges
-
-| Setup                            | Target | Effective range |
-| -------------------------------- | ------ | --------------: |
-| 12 ga 00 Buck, Cylinder, Plastic | Coyote |           44 yd |
-| 12 ga 00 Buck, Cylinder, Plastic | Deer   |           44 yd |
-| 12 ga 00 Buck, Cylinder, Plastic | Hog    |           29 yd |
-| 12 ga 00 Buck, Modified, Plastic | Deer   |           44 yd |
-| 12 ga #6 Lead, Modified, Plastic | Dove   |           38 yd |
-| 12 ga #6 Lead, Modified, Plastic | Duck   |           45 yd |
-| 12 ga TSS #9, Full, Plastic      | Turkey |           64 yd |
-| 20 ga #6 Lead, Modified, Plastic | Duck   |           42 yd |
+## Technical Docs
+
+Detailed documentation for each feature is in the [`docs/`](docs/) folder:
+
+- **[docs/rifles.md](docs/rifles.md)** — Ballistic engine: 3-DoF RK4 solver, CIPM-2007 atmosphere, G1/G7 drag, test data
+- **[docs/shotguns.md](docs/shotguns.md)** — Pattern estimation: Rayleigh model, PE tables, modifiers, OpenCV calibration pipeline, effective range
+- **[docs/weather.md](docs/weather.md)** — Wind overlay: particle system, Open-Meteo API, manual/live/forecast modes, saved profiles
+- **[docs/land-overlay.md](docs/land-overlay.md)** — Public/Crown land: data pipeline (CPCAD + provincial open data → tippecanoe → Mapbox), colour-coded map layers, filtering
+- **[docs/track-id.md](docs/track-id.md)** — Animal track ID: YOLOv11n TFLite models (117 footprint + 101 feces species), inference pipeline
+- **[docs/plant-id.md](docs/plant-id.md)** — Plant ID: EfficientNet-Lite0 classifier, metadata reranking (region/season/part)
+- **[docs/hike-tracking.md](docs/hike-tracking.md)** — GPS hike tracking: background location, haversine filtering, elevation gain/loss
+- **[docs/monetisation.md](docs/monetisation.md)** — Ads (AdMob) & subscription (IAP): product IDs, StoreKit testing, transaction management
+- **[docs/ios-tflite.md](docs/ios-tflite.md)** — TFLite iOS symbol stripping workaround (KeepTfLiteSymbols.m + build settings)
+- **[docs/deployment.md](docs/deployment.md)** — App Store Connect: build, upload, TestFlight, submission
+
+## What the POC deliberately skips
+
+- No backend / no auth / no sync
+- No MIL output (inches + MOA + clicks only)
+- No shot history
+- Imperial units only

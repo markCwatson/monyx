@@ -67,8 +67,8 @@ enum ShotSize {
 }
 
 enum WadType {
-  plastic('Plastic', 0.90),
-  fiber('Fiber', 1.15);
+  plastic('Plastic', 1.00),
+  fiber('Fiber', 1.10);
 
   final String label;
   final double spreadModifier;

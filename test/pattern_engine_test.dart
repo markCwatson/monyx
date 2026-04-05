@@ -6,6 +6,31 @@ import 'package:atlix/ballistics/pattern_engine.dart';
 import 'package:atlix/models/calibration_record.dart';
 import 'package:atlix/models/shotgun_setup.dart';
 
+// ── Helpers ────────────────────────────────────────────────────────
+
+/// Derive Rayleigh σ at 40 yards from a pattern efficiency value.
+double _sigma40(double pe) => 15.0 / sqrt(-2.0 * log(1.0 - pe));
+
+/// Rayleigh CDF: fraction of pellets within [radius] given [sigma].
+double _rayleighCDF(double radius, double sigma) {
+  if (sigma <= 0) return 1.0;
+  return 1.0 - exp(-radius * radius / (2.0 * sigma * sigma));
+}
+
+// ── Published pattern efficiency values ────────────────────────────
+
+const _pe = <ChokeType, double>{
+  ChokeType.cylinder: 0.40,
+  ChokeType.skeet: 0.45,
+  ChokeType.improvedCylinder: 0.50,
+  ChokeType.modified: 0.60,
+  ChokeType.improvedModified: 0.65,
+  ChokeType.full: 0.70,
+  ChokeType.extraFull: 0.73,
+};
+
+// ── Test setups ────────────────────────────────────────────────────
+
 /// Default 12 ga Modified choke, #6 Lead, plastic wad, standard ammo.
 final _default12ga = ShotgunSetup(
   name: 'Test 12ga Mod',
@@ -54,23 +79,52 @@ final _full = ShotgunSetup(
 void main() {
   final engine = PatternEngine();
 
-  // ── Spread diameter ──────────────────────────────────────────────
+  // ── PE verification (the anchor test) ────────────────────────────
+
+  group('Pattern efficiency verification at 40 yards', () {
+    for (final choke in ChokeType.values) {
+      test('${choke.label}: pellets in 30" ≈ published PE', () {
+        final setup = ShotgunSetup(
+          name: choke.label,
+          gauge: Gauge.g12,
+          barrelLengthInches: 28,
+          chokeType: choke,
+          loadName: 'Test',
+          shotCategory: ShotCategory.lead,
+          shotSize: ShotSize.s6,
+          pelletCount: 1000, // large count for better resolution
+          muzzleVelocityFps: 1330,
+          wadType: WadType.plastic,
+          ammoSpreadClass: AmmoSpreadClass.standard,
+        );
+        final r = engine.predict(setup: setup, distanceYards: 40);
+        // pelletsIn30Circle / total should match PE within ±1%.
+        // Use Rayleigh CDF at 15" radius directly.
+        final pe = _pe[choke]!;
+        final sigma = _sigma40(pe); // at 40 yd, modifiers are all 1.0
+        final expectedFraction = _rayleighCDF(15.0, sigma);
+        expect(expectedFraction, closeTo(pe, 0.01));
+
+        // Also verify the engine's pellet count matches
+        // (5pt tolerance for rounding at 1000 pellets)
+        final expectedPellets = (1000 * pe).round();
+        // We need to get pellets in a 30" circle (15" radius) from the result.
+        // Use the returned sigma to compute it from R50.
+        final resultSigma = r.r50Inches / sqrt(log(4));
+        final actualFraction = _rayleighCDF(15.0, resultSigma);
+        expect(actualFraction, closeTo(pe, 0.01));
+      });
+    }
+  });
+
+  // ── Spread diameter (99% containment) ────────────────────────────
 
   group('Spread diameter', () {
-    test('12ga Modified at 20yds: spread = 0.7 * 20 * 0.9 * 1.0 = 12.6"', () {
-      final r = engine.predict(setup: _default12ga, distanceYards: 20);
-      // 0.7 (mod) × 20 × 0.90 (plastic) × 1.00 (standard) = 12.6
-      expect(r.spreadDiameterInches, closeTo(12.6, 0.01));
-    });
-
-    test('Cylinder at 20yds: spread = 1.0 * 20 * 0.9 * 1.0 = 18"', () {
-      final r = engine.predict(setup: _cylinder, distanceYards: 20);
-      expect(r.spreadDiameterInches, closeTo(18.0, 0.01));
-    });
-
-    test('Full at 40yds: spread = 0.5 * 40 * 0.9 * 1.0 = 18"', () {
-      final r = engine.predict(setup: _full, distanceYards: 40);
-      expect(r.spreadDiameterInches, closeTo(18.0, 0.01));
+    test('12ga Modified at 40yds: spread = 2σ√(−2ln0.01)', () {
+      final r = engine.predict(setup: _default12ga, distanceYards: 40);
+      final sigma40 = _sigma40(0.60); // Modified PE
+      final expected = 2.0 * sigma40 * sqrt(-2.0 * log(0.01));
+      expect(r.spreadDiameterInches, closeTo(expected, 0.01));
     });
 
     test('spread scales linearly with distance', () {
@@ -115,15 +169,14 @@ void main() {
         ),
         distanceYards: 30,
       );
-      // fiber modifier 1.15 > plastic 0.90
       expect(
         fiber.spreadDiameterInches,
         greaterThan(plastic.spreadDiameterInches),
       );
-      // Exact ratio: 1.15 / 0.90
+      // Exact ratio: fiber(1.10) / plastic(1.00) = 1.10
       expect(
         fiber.spreadDiameterInches / plastic.spreadDiameterInches,
-        closeTo(1.15 / 0.90, 0.001),
+        closeTo(1.10 / 1.00, 0.001),
       );
     });
 
@@ -159,22 +212,38 @@ void main() {
   // ── R50 / R75 / Rayleigh consistency ─────────────────────────────
 
   group('R50 / R75 Rayleigh distribution', () {
-    test('R50 = 35% of spread radius', () {
-      final r = engine.predict(setup: _default12ga, distanceYards: 30);
-      expect(r.r50Inches, closeTo(r.spreadDiameterInches * 0.35 / 2.0, 0.01));
-    });
-
     test('R75 > R50', () {
       final r = engine.predict(setup: _default12ga, distanceYards: 30);
       expect(r.r75Inches, greaterThan(r.r50Inches));
     });
 
-    test('R75 / R50 matches Rayleigh CDF ratio', () {
+    test('R75 / R50 = √2 (Rayleigh invariant)', () {
       final r = engine.predict(setup: _default12ga, distanceYards: 30);
-      // sigma = R50 / sqrt(ln(4))
-      // R75 = sigma * sqrt(2 * ln(4))
-      // R75 / R50 = sqrt(2 * ln(4)) / sqrt(ln(4)) = sqrt(2)
       expect(r.r75Inches / r.r50Inches, closeTo(sqrt(2), 0.001));
+    });
+
+    test('R75/R50 = √2 holds for all chokes', () {
+      for (final choke in ChokeType.values) {
+        final setup = ShotgunSetup(
+          name: choke.label,
+          gauge: Gauge.g12,
+          barrelLengthInches: 28,
+          chokeType: choke,
+          loadName: 'Test',
+          shotCategory: ShotCategory.lead,
+          shotSize: ShotSize.s6,
+          pelletCount: 281,
+          muzzleVelocityFps: 1330,
+          wadType: WadType.plastic,
+          ammoSpreadClass: AmmoSpreadClass.standard,
+        );
+        final r = engine.predict(setup: setup, distanceYards: 35);
+        expect(
+          r.r75Inches / r.r50Inches,
+          closeTo(sqrt(2), 0.001),
+          reason: '${choke.label} R75/R50 should be √2',
+        );
+      }
     });
   });
 
@@ -194,7 +263,7 @@ void main() {
 
     test('very close distance → almost all pellets in 20"', () {
       final r = engine.predict(setup: _default12ga, distanceYards: 5);
-      // At 5 yds, spread ≈ 3.15", so a 20" circle should capture nearly all
+      // At 5 yds sigma is tiny, so a 20" circle should capture nearly all.
       expect(r.pelletsIn20Circle, equals(r.totalPellets));
     });
 
@@ -202,8 +271,105 @@ void main() {
       final r = engine.predict(setup: _default12ga, distanceYards: 30);
       final sigma = r.r50Inches / sqrt(log(4));
       const radius = 5.0; // 10" diameter
-      final p = 1.0 - exp(-radius * radius / (2 * sigma * sigma));
+      final p = _rayleighCDF(radius, sigma);
       expect(r.pelletsIn10Circle, equals((281 * p).round()));
+    });
+
+    test('Modified 25yd: ~90% in 30" circle (sanity)', () {
+      final r = engine.predict(setup: _default12ga, distanceYards: 25);
+      final sigma = r.r50Inches / sqrt(log(4));
+      final fractionIn30 = _rayleighCDF(15.0, sigma);
+      // At 25 yd with Modified choke, expect ~86-95% in 30"
+      expect(fractionIn30, greaterThan(0.80));
+      expect(fractionIn30, lessThan(1.00));
+    });
+  });
+
+  // ── Gauge and hardness modifiers ─────────────────────────────────
+
+  group('Gauge and hardness modifiers', () {
+    test('20ga spreads wider than 12ga (same named choke)', () {
+      final ga12 = engine.predict(setup: _default12ga, distanceYards: 30);
+      final ga20 = engine.predict(
+        setup: ShotgunSetup(
+          name: '20ga',
+          gauge: Gauge.g20,
+          barrelLengthInches: 26,
+          chokeType: ChokeType.modified,
+          loadName: '#6 Lead',
+          shotCategory: ShotCategory.lead,
+          shotSize: ShotSize.s6,
+          pelletCount: 218,
+          muzzleVelocityFps: 1300,
+          wadType: WadType.plastic,
+          ammoSpreadClass: AmmoSpreadClass.standard,
+        ),
+        distanceYards: 30,
+      );
+      expect(ga20.spreadDiameterInches, greaterThan(ga12.spreadDiameterInches));
+    });
+
+    test('steel patterns tighter than lead (same choke)', () {
+      final lead = engine.predict(setup: _default12ga, distanceYards: 30);
+      final steel = engine.predict(
+        setup: ShotgunSetup(
+          name: 'Steel',
+          gauge: Gauge.g12,
+          barrelLengthInches: 28,
+          chokeType: ChokeType.modified,
+          loadName: '#6 Steel',
+          shotCategory: ShotCategory.steel,
+          shotSize: ShotSize.s6,
+          pelletCount: 281,
+          muzzleVelocityFps: 1330,
+          wadType: WadType.plastic,
+          ammoSpreadClass: AmmoSpreadClass.standard,
+        ),
+        distanceYards: 30,
+      );
+      expect(steel.spreadDiameterInches, lessThan(lead.spreadDiameterInches));
+    });
+
+    test('steel + Modified ≈ lead + Full ("two chokes tighter")', () {
+      // Steel Modified should be roughly similar to Lead Full
+      final steelMod = engine.predict(
+        setup: ShotgunSetup(
+          name: 'Steel Mod',
+          gauge: Gauge.g12,
+          barrelLengthInches: 28,
+          chokeType: ChokeType.modified,
+          loadName: 'Steel',
+          shotCategory: ShotCategory.steel,
+          shotSize: ShotSize.s6,
+          pelletCount: 281,
+          muzzleVelocityFps: 1330,
+          wadType: WadType.plastic,
+          ammoSpreadClass: AmmoSpreadClass.standard,
+        ),
+        distanceYards: 40,
+      );
+      final leadFull = engine.predict(
+        setup: ShotgunSetup(
+          name: 'Lead Full',
+          gauge: Gauge.g12,
+          barrelLengthInches: 28,
+          chokeType: ChokeType.full,
+          loadName: 'Lead',
+          shotCategory: ShotCategory.lead,
+          shotSize: ShotSize.s6,
+          pelletCount: 281,
+          muzzleVelocityFps: 1330,
+          wadType: WadType.plastic,
+          ammoSpreadClass: AmmoSpreadClass.standard,
+        ),
+        distanceYards: 40,
+      );
+      // Steel Modified sigma: σ₄₀(0.60) × 0.85 = 11.08 × 0.85 ≈ 9.42
+      // Lead Full sigma: σ₄₀(0.70) × 1.00 = 9.66
+      // Within ~3% — close enough for the "two chokes tighter" rule
+      final steelSigma = steelMod.r50Inches / sqrt(log(4));
+      final leadSigma = leadFull.r50Inches / sqrt(log(4));
+      expect(steelSigma / leadSigma, closeTo(1.0, 0.05));
     });
   });
 
@@ -230,6 +396,11 @@ void main() {
       final r = engine.predict(setup: _default12ga, distanceYards: 20);
       expect(r.totalPellets, equals(281));
     });
+
+    test('patternEfficiency matches choke PE', () {
+      final r = engine.predict(setup: _default12ga, distanceYards: 20);
+      expect(r.patternEfficiency, equals(0.60));
+    });
   });
 
   // ── Calibration record ───────────────────────────────────────────
@@ -254,30 +425,30 @@ void main() {
       expect(r.isCalibrated, isTrue);
     });
 
-    test('diameterMultiplier scales spread', () {
+    test('calibration scales sigma (and thus R50)', () {
       final uncal = engine.predict(setup: _default12ga, distanceYards: 20);
       final caled = engine.predict(
         setup: _default12ga,
         distanceYards: 20,
         calibration: cal,
       );
-      expect(
-        caled.spreadDiameterInches,
-        closeTo(uncal.spreadDiameterInches * 1.2, 0.01),
-      );
+      // In the PE model, σ_final = σ × calDiamMod × calSigMod
+      // R50 = σ_final × √(ln4), so R50_cal / R50_uncal = 1.2 × 1.1
+      expect(caled.r50Inches / uncal.r50Inches, closeTo(1.2 * 1.1, 0.001));
     });
 
-    test('sigmaMultiplier scales R50', () {
+    test('calibration scales spread diameter by same factor', () {
       final uncal = engine.predict(setup: _default12ga, distanceYards: 20);
       final caled = engine.predict(
         setup: _default12ga,
         distanceYards: 20,
         calibration: cal,
       );
-      // R50 is derived from spread * 0.35 / 2 * calSigMod
-      // But spread itself is scaled by calDiamMod, so:
-      // calR50 = (spread * 1.2) * 0.35 / 2 * 1.1
-      expect(caled.r50Inches, closeTo(uncal.r50Inches * 1.2 * 1.1, 0.01));
+      // spreadDiameter = 2σ√(−2ln0.01), so same ratio
+      expect(
+        caled.spreadDiameterInches / uncal.spreadDiameterInches,
+        closeTo(1.2 * 1.1, 0.001),
+      );
     });
 
     test('POI offset is passed through from calibration', () {
@@ -290,7 +461,7 @@ void main() {
       expect(r.poiOffsetYInches, equals(-0.3));
     });
 
-    test('identity calibration (1.0, 1.0) matches uncalibrated', () {
+    test('identity calibration (1.0, 1.0) matches uncalibrated exactly', () {
       const identity = CalibrationRecord(
         setupId: 'Test 12ga Mod',
         diameterMultiplier: 1.0,
@@ -339,6 +510,8 @@ void main() {
         expect(r.pelletsIn10Circle, greaterThanOrEqualTo(0));
         expect(r.pelletsIn20Circle, greaterThanOrEqualTo(r.pelletsIn10Circle));
         expect(r.totalPellets, equals(281));
+        expect(r.patternEfficiency, greaterThan(0));
+        expect(r.patternEfficiency, lessThan(1));
       });
     }
   });
@@ -346,9 +519,11 @@ void main() {
   // ── Edge cases ───────────────────────────────────────────────────
 
   group('Edge cases', () {
-    test('zero distance → zero spread', () {
+    test('zero distance → zero spread, all pellets in any circle', () {
       final r = engine.predict(setup: _default12ga, distanceYards: 0);
       expect(r.spreadDiameterInches, equals(0.0));
+      expect(r.pelletsIn10Circle, equals(r.totalPellets));
+      expect(r.pelletsIn20Circle, equals(r.totalPellets));
     });
 
     test('very long distance (60yds) still produces valid results', () {

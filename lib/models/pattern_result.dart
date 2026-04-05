@@ -11,6 +11,7 @@ class PatternResult extends Equatable {
   final double poiOffsetYInches;
   final bool isCalibrated;
   final int totalPellets;
+  final double patternEfficiency;
 
   const PatternResult({
     required this.distanceYards,
@@ -23,6 +24,7 @@ class PatternResult extends Equatable {
     required this.poiOffsetYInches,
     required this.isCalibrated,
     required this.totalPellets,
+    this.patternEfficiency = 0.0,
   });
 
   @override
@@ -37,5 +39,6 @@ class PatternResult extends Equatable {
     poiOffsetYInches,
     isCalibrated,
     totalPellets,
+    patternEfficiency,
   ];
 }

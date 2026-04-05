@@ -7,15 +7,32 @@ import '../models/shotgun_setup.dart';
 class ShotgunBallistics {
   ShotgunBallistics._();
 
-  // Base spread rate in inches per yard, by choke — mirrors PatternEngine.
-  static const _chokeBaseRate = <ChokeType, double>{
-    ChokeType.cylinder: 1.00,
-    ChokeType.skeet: 0.90,
-    ChokeType.improvedCylinder: 0.80,
-    ChokeType.modified: 0.70,
-    ChokeType.improvedModified: 0.60,
-    ChokeType.full: 0.50,
-    ChokeType.extraFull: 0.40,
+  /// Pattern efficiency at 40 yards — mirrors PatternEngine.
+  static const _patternEfficiency = <ChokeType, double>{
+    ChokeType.cylinder: 0.40,
+    ChokeType.skeet: 0.45,
+    ChokeType.improvedCylinder: 0.50,
+    ChokeType.modified: 0.60,
+    ChokeType.improvedModified: 0.65,
+    ChokeType.full: 0.70,
+    ChokeType.extraFull: 0.73,
+  };
+
+  /// Gauge modifier — mirrors PatternEngine.
+  static const _gaugeModifier = <Gauge, double>{
+    Gauge.g12: 1.00,
+    Gauge.g20: 1.05,
+    Gauge.g28: 1.08,
+    Gauge.g410: 1.12,
+  };
+
+  /// Shot material hardness modifier — mirrors PatternEngine.
+  static const _hardnessModifier = <ShotCategory, double>{
+    ShotCategory.lead: 1.00,
+    ShotCategory.steel: 0.85,
+    ShotCategory.bismuth: 0.93,
+    ShotCategory.tungsten: 0.87,
+    ShotCategory.tss: 0.85,
   };
 
   /// Mass of a single pellet in grains.
@@ -77,20 +94,31 @@ class ShotgunBallistics {
 
   /// Probability that a single pellet lands inside a circle of
   /// [diameterInches] at [distanceYards] (Rayleigh CDF).
+  ///
+  /// Uses the PE-anchored sigma model consistent with PatternEngine.
   static double _pInVital(
     ShotgunSetup setup,
     double distanceYards,
     double diameterInches,
   ) {
-    final baseRate = _chokeBaseRate[setup.chokeType]!;
+    final pe = _patternEfficiency[setup.chokeType]!;
+    // σ₄₀ = 15 / √(−2 ln(1 − PE))
+    final sigma40 = 15.0 / sqrt(-2.0 * log(1.0 - pe));
+
+    final gaugeMod = _gaugeModifier[setup.gauge]!;
+    final hardnessMod = _hardnessModifier[setup.shotCategory]!;
     final wadMod = setup.wadType.spreadModifier;
     final ammoMod = setup.ammoSpreadClass.sigmaMultiplier;
 
-    final spreadDiameter = baseRate * distanceYards * wadMod * ammoMod;
-    if (spreadDiameter <= 0) return 1.0;
+    final sigma =
+        sigma40 *
+        gaugeMod *
+        hardnessMod *
+        wadMod *
+        ammoMod *
+        (distanceYards / 40.0);
+    if (sigma <= 0) return 1.0;
 
-    final r50 = spreadDiameter * 0.35 / 2.0;
-    final sigma = r50 / sqrt(log(4));
     final r = diameterInches / 2.0;
     return 1.0 - exp(-r * r / (2 * sigma * sigma));
   }

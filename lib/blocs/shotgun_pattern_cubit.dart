@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -74,14 +75,16 @@ class CalibrationReady extends ShotgunPatternState {
   final PatternResult before;
   final PatternResult after;
   final ShotgunSetup setup;
+  final Uint8List rectifiedImage;
   const CalibrationReady({
     required this.session,
     required this.before,
     required this.after,
     required this.setup,
+    required this.rectifiedImage,
   });
   @override
-  List<Object?> get props => [session, before, after, setup];
+  List<Object?> get props => [session, before, after, setup, rectifiedImage];
 }
 
 class CalibrationError extends ShotgunPatternState {
@@ -151,12 +154,15 @@ class ShotgunPatternCubit extends Cubit<ShotgunPatternState> {
     required File imageFile,
     required ShotgunSetup setup,
     required double distanceYards,
+    double sheetSizeInches = 24.0,
   }) async {
     emit(const CalibrationAnalyzing());
     try {
-      final session = await _calibrator.analyze(
+      final analysis = await _calibrator.analyze(
         imageFile,
         expectedPelletCount: setup.pelletCount,
+        sheetSizeInches: sheetSizeInches,
+        distanceYards: distanceYards,
       );
 
       // "before" = prediction without any calibration
@@ -171,7 +177,7 @@ class ShotgunPatternCubit extends Cubit<ShotgunPatternState> {
       final existing = await _service.loadCalibration(setupId);
       final tentative = _blendCalibration(
         existing: existing,
-        session: session,
+        session: analysis.session,
         setup: setup,
         distanceYards: distanceYards,
       );
@@ -184,10 +190,11 @@ class ShotgunPatternCubit extends Cubit<ShotgunPatternState> {
 
       emit(
         CalibrationReady(
-          session: session,
+          session: analysis.session,
           before: before,
           after: after,
           setup: setup,
+          rectifiedImage: analysis.rectifiedImage,
         ),
       );
     } catch (e) {

@@ -1,44 +1,77 @@
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 import 'dart:ui' show Offset;
 
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 
 import '../models/calibration_session.dart';
 
-/// Analyses a photo of a shotgun pattern shot on a 24"×24" white sheet at
-/// 20 yards. Detects the page boundary, rectifies perspective, locates pellet
-/// impacts, and computes calibration metrics.
-class PatternCalibrator {
-  static const _rectifiedSize = 720; // pixels (30 px per inch for 24" sheet)
-  static const _pxPerInch = 30.0;
-  static const _sheetSizeInches = 24.0;
-  static const _calibrationDistanceYards = 20.0;
+/// Result of calibration photo analysis: the session metrics plus the
+/// perspective-rectified image bytes (JPEG) for overlay display.
+typedef CalibrationAnalysis = ({
+  CalibrationSession session,
+  Uint8List rectifiedImage,
+});
 
-  /// Analyse a single photo and return a [CalibrationSession].
+/// Analyses a photo of a shotgun pattern shot on a square target at a known
+/// distance. Detects the target boundary, rectifies perspective, locates
+/// pellet impacts, and computes calibration metrics.
+///
+/// The target can be any colour and any size — the pellet detector tries both
+/// dark-on-light and light-on-dark polarities and picks the better match.
+class PatternCalibrator {
+  static const _pxPerInch = 30.0;
+
+  /// Analyse a single photo and return a [CalibrationAnalysis].
   ///
   /// [expectedPelletCount] is the user's known pellet count from the load
   /// setup. Used for confidence scoring and clipping detection.
-  Future<CalibrationSession> analyze(
+  ///
+  /// [sheetSizeInches] is the side length of the square target (default 24").
+  /// [distanceYards] is the shooting distance (default 20 yds).
+  Future<CalibrationAnalysis> analyze(
     File imageFile, {
     required int expectedPelletCount,
+    double sheetSizeInches = 24.0,
+    double distanceYards = 20.0,
   }) async {
     final bytes = await imageFile.readAsBytes();
     final src = cv.imdecode(bytes, cv.IMREAD_COLOR);
     if (src.isEmpty) throw StateError('Could not decode image');
+
+    final rectifiedSize = (sheetSizeInches * _pxPerInch).round();
 
     try {
       // 1. Find the page quadrilateral
       final corners = _detectPage(src);
 
       // 2. Rectify to a top-down square
-      final rectified = _rectify(src, corners);
+      final rectified = _rectify(src, corners, rectifiedSize);
 
-      // 3. Detect pellet holes on the rectified image
-      final pellets = _detectPellets(rectified, expectedPelletCount);
+      // 3. Encode the rectified image for UI overlay
+      final (_, jpegBytes) = cv.imencode('.jpg', rectified);
 
-      // 4. Compute metrics
-      return _computeMetrics(pellets, expectedPelletCount);
+      // 4. Detect pellet holes — tries both polarities for colour-agnostic
+      //    detection and picks the result closest to expected count.
+      final pellets = _detectPellets(
+        rectified,
+        expectedPelletCount,
+        sheetSizeInches,
+        rectifiedSize,
+      );
+
+      // 5. Compute metrics
+      final session = _computeMetrics(
+        pellets,
+        expectedPelletCount,
+        sheetSizeInches,
+        distanceYards,
+      );
+
+      rectified.dispose();
+
+      return (session: session, rectifiedImage: Uint8List.fromList(jpegBytes));
     } finally {
       src.dispose();
     }
@@ -115,11 +148,11 @@ class PatternCalibrator {
 
   // ── Perspective Rectification ────────────────────────────────────
 
-  cv.Mat _rectify(cv.Mat src, List<cv.Point> corners) {
+  cv.Mat _rectify(cv.Mat src, List<cv.Point> corners, int rectifiedSize) {
     final srcPts = corners
         .map((p) => cv.Point2f(p.x.toDouble(), p.y.toDouble()))
         .toList();
-    final s = _rectifiedSize.toDouble();
+    final s = rectifiedSize.toDouble();
     final dstPts = [
       cv.Point2f(0, 0),
       cv.Point2f(s, 0),
@@ -129,8 +162,8 @@ class PatternCalibrator {
 
     final M = cv.getPerspectiveTransform2f(srcPts.cvd, dstPts.cvd);
     final rectified = cv.warpPerspective(src, M, (
-      _rectifiedSize,
-      _rectifiedSize,
+      rectifiedSize,
+      rectifiedSize,
     ));
     M.dispose();
     return rectified;
@@ -140,20 +173,57 @@ class PatternCalibrator {
 
   /// Returns pellet positions in inches relative to page center.
   ///
+  /// Tries both dark-on-light (inverted) and light-on-dark (direct) threshold
+  /// polarities and picks whichever yields a count closer to
+  /// [expectedPelletCount]. This makes detection work on targets of any colour.
+  ///
   /// Morphology and area filtering are scaled by [expectedPelletCount]:
   ///   - Low counts (buckshot, ≤20): large close kernel to merge splatter,
   ///     wide area range to accept big holes.
   ///   - High counts (birdshot, 200+): small close kernel to avoid merging
   ///     adjacent tiny holes, narrow area range.
-  List<Offset> _detectPellets(cv.Mat rectified, int expectedPelletCount) {
+  List<Offset> _detectPellets(
+    cv.Mat rectified,
+    int expectedPelletCount,
+    double sheetSizeInches,
+    int rectifiedSize,
+  ) {
     final gray = cv.cvtColor(rectified, cv.COLOR_BGR2GRAY);
 
-    // Invert: pellet holes (dark) become bright
+    // Try both polarities: dark holes on light target, light holes on dark
     final inverted = cv.bitwiseNOT(gray);
+    final pelletsInverted = _detectPelletsFromGray(
+      inverted,
+      expectedPelletCount,
+      sheetSizeInches,
+      rectifiedSize,
+    );
+    final pelletsDirect = _detectPelletsFromGray(
+      gray,
+      expectedPelletCount,
+      sheetSizeInches,
+      rectifiedSize,
+    );
 
+    gray.dispose();
+    inverted.dispose();
+
+    // Pick whichever polarity gives a count closer to expected
+    final diffInv = (pelletsInverted.length - expectedPelletCount).abs();
+    final diffDir = (pelletsDirect.length - expectedPelletCount).abs();
+    return diffInv <= diffDir ? pelletsInverted : pelletsDirect;
+  }
+
+  /// Core detection on a single-polarity grayscale image (bright = pellet).
+  List<Offset> _detectPelletsFromGray(
+    cv.Mat gray,
+    int expectedPelletCount,
+    double sheetSizeInches,
+    int rectifiedSize,
+  ) {
     // Otsu's threshold
     final (_, binary) = cv.threshold(
-      inverted,
+      gray,
       0,
       255,
       cv.THRESH_BINARY | cv.THRESH_OTSU,
@@ -171,7 +241,7 @@ class PatternCalibrator {
       closeSize = 9;
       openSize = 5;
       minArea = 30;
-      maxArea = _rectifiedSize * _rectifiedSize ~/ 10; // 10% of image
+      maxArea = rectifiedSize * rectifiedSize ~/ 10; // 10% of image
     } else if (expectedPelletCount <= 100) {
       // Mid-range (#4, #2, BB)
       closeSize = 5;
@@ -221,13 +291,11 @@ class PatternCalibrator {
       final cy = centroids.at<double>(i, 1);
 
       // Convert from pixels to inches, centered at page middle
-      final xInches = cx / _pxPerInch - _sheetSizeInches / 2;
-      final yInches = -(cy / _pxPerInch - _sheetSizeInches / 2); // Y up
+      final xInches = cx / _pxPerInch - sheetSizeInches / 2;
+      final yInches = -(cy / _pxPerInch - sheetSizeInches / 2); // Y up
       pellets.add(Offset(xInches, yInches));
     }
 
-    gray.dispose();
-    inverted.dispose();
     binary.dispose();
     closeKernel.dispose();
     closed.dispose();
@@ -245,6 +313,8 @@ class PatternCalibrator {
   CalibrationSession _computeMetrics(
     List<Offset> pellets,
     int expectedPelletCount,
+    double sheetSizeInches,
+    double distanceYards,
   ) {
     if (pellets.isEmpty) throw StateError('No pellet impacts detected');
 
@@ -281,7 +351,7 @@ class PatternCalibrator {
 
     // Clipping: pellets within 1" of any page edge
     final edgeMargin = 1.0;
-    final halfSheet = _sheetSizeInches / 2;
+    final halfSheet = sheetSizeInches / 2;
     final nearEdge = pellets.where((p) {
       return p.dx.abs() > (halfSheet - edgeMargin) ||
           p.dy.abs() > (halfSheet - edgeMargin);
@@ -296,7 +366,8 @@ class PatternCalibrator {
     final confidence = (countRatio * clippingPenalty).clamp(0.0, 1.0);
 
     return CalibrationSession(
-      distanceYards: _calibrationDistanceYards,
+      distanceYards: distanceYards,
+      sheetSizeInches: sheetSizeInches,
       detectedPelletCount: pellets.length,
       measuredR50Inches: r50,
       measuredR75Inches: r75,

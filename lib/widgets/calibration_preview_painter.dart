@@ -1,11 +1,13 @@
 import 'dart:math';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
 import '../models/calibration_session.dart';
 
-/// Paints the detected pellet positions from a [CalibrationSession] on a
-/// schematic 24"×24" target sheet, with R50/R75 circles and the POI crosshair.
+/// Paints the detected pellet positions from a [CalibrationSession] overlaid
+/// on the rectified target photo. Falls back to a schematic if no image is
+/// provided.
 ///
 /// Pellets from `detectedPellets` are drawn cyan. Pellets from `addedPellets`
 /// are drawn green. [selectedIndex] ≥ 0 highlights a detected pellet;
@@ -15,35 +17,55 @@ class CalibrationPreviewPainter extends CustomPainter {
   final List<Offset> detectedPellets;
   final List<Offset> addedPellets;
   final int? selectedIndex;
+  final ui.Image? backgroundImage;
+  final double sheetSizeInches;
 
   CalibrationPreviewPainter({
     required this.session,
     required this.detectedPellets,
     this.addedPellets = const [],
     this.selectedIndex,
+    this.backgroundImage,
+    this.sheetSizeInches = 24.0,
   });
-
-  static const _sheetInches = 24.0;
 
   @override
   void paint(Canvas canvas, Size size) {
     final side = min(size.width, size.height);
-    final scale = side / _sheetInches;
+    final scale = side / sheetSizeInches;
     final cx = size.width / 2;
     final cy = size.height / 2;
 
-    // ── Sheet outline ──
     final sheetRect = Rect.fromCenter(
       center: Offset(cx, cy),
       width: side,
       height: side,
     );
-    canvas.drawRect(
-      sheetRect,
-      Paint()
-        ..color = Colors.white12
-        ..style = PaintingStyle.fill,
-    );
+
+    // ── Background: rectified photo or schematic fallback ──
+    if (backgroundImage != null) {
+      final src = Rect.fromLTWH(
+        0,
+        0,
+        backgroundImage!.width.toDouble(),
+        backgroundImage!.height.toDouble(),
+      );
+      canvas.drawImageRect(backgroundImage!, src, sheetRect, Paint());
+      // Semi-transparent overlay for contrast
+      canvas.drawRect(
+        sheetRect,
+        Paint()..color = Colors.black.withValues(alpha: 0.15),
+      );
+    } else {
+      canvas.drawRect(
+        sheetRect,
+        Paint()
+          ..color = Colors.white12
+          ..style = PaintingStyle.fill,
+      );
+    }
+
+    // ── Sheet border ──
     canvas.drawRect(
       sheetRect,
       Paint()
@@ -54,7 +76,7 @@ class CalibrationPreviewPainter extends CustomPainter {
 
     // ── Reference circles (10" and 20") ──
     final dashPaint = Paint()
-      ..color = Colors.white24
+      ..color = Colors.white30
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1;
     canvas.drawCircle(Offset(cx, cy), 5.0 * scale, dashPaint);
@@ -152,5 +174,7 @@ class CalibrationPreviewPainter extends CustomPainter {
       session != old.session ||
       selectedIndex != old.selectedIndex ||
       detectedPellets != old.detectedPellets ||
-      addedPellets != old.addedPellets;
+      addedPellets != old.addedPellets ||
+      backgroundImage != old.backgroundImage ||
+      sheetSizeInches != old.sheetSizeInches;
 }

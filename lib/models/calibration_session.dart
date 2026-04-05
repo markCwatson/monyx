@@ -5,6 +5,7 @@ import 'package:equatable/equatable.dart';
 
 class CalibrationSession extends Equatable {
   final double distanceYards;
+  final double sheetSizeInches;
   final int detectedPelletCount;
   final double measuredR50Inches;
   final double measuredR75Inches;
@@ -19,6 +20,7 @@ class CalibrationSession extends Equatable {
 
   const CalibrationSession({
     required this.distanceYards,
+    this.sheetSizeInches = 24.0,
     required this.detectedPelletCount,
     required this.measuredR50Inches,
     required this.measuredR75Inches,
@@ -40,6 +42,7 @@ class CalibrationSession extends Equatable {
     if (pellets.isEmpty) {
       return CalibrationSession(
         distanceYards: distanceYards,
+        sheetSizeInches: sheetSizeInches,
         detectedPelletCount: 0,
         measuredR50Inches: 0,
         measuredR75Inches: 0,
@@ -78,7 +81,7 @@ class CalibrationSession extends Equatable {
         .where((p) => sqrt(pow(p.dx - meanX, 2) + pow(p.dy - meanY, 2)) <= 10.0)
         .length;
 
-    const halfSheet = 12.0; // 24" sheet
+    final halfSheet = sheetSizeInches / 2;
     final nearEdge = pellets
         .where(
           (p) =>
@@ -92,6 +95,7 @@ class CalibrationSession extends Equatable {
 
     return CalibrationSession(
       distanceYards: distanceYards,
+      sheetSizeInches: sheetSizeInches,
       detectedPelletCount: pellets.length,
       measuredR50Inches: r50,
       measuredR75Inches: r75,
@@ -108,6 +112,7 @@ class CalibrationSession extends Equatable {
 
   Map<String, dynamic> toJson() => {
     'distanceYards': distanceYards,
+    'sheetSizeInches': sheetSizeInches,
     'detectedPelletCount': detectedPelletCount,
     'measuredR50Inches': measuredR50Inches,
     'measuredR75Inches': measuredR75Inches,
@@ -127,6 +132,7 @@ class CalibrationSession extends Equatable {
         .toList();
     return CalibrationSession(
       distanceYards: (json['distanceYards'] as num).toDouble(),
+      sheetSizeInches: (json['sheetSizeInches'] as num?)?.toDouble() ?? 24.0,
       detectedPelletCount: (json['detectedPelletCount'] as num).toInt(),
       measuredR50Inches: (json['measuredR50Inches'] as num).toDouble(),
       measuredR75Inches: (json['measuredR75Inches'] as num).toDouble(),
@@ -144,6 +150,7 @@ class CalibrationSession extends Equatable {
   @override
   List<Object?> get props => [
     distanceYards,
+    sheetSizeInches,
     detectedPelletCount,
     measuredR50Inches,
     measuredR75Inches,

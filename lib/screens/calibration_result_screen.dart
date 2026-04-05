@@ -1,4 +1,6 @@
 import 'dart:math';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -11,16 +13,17 @@ import '../widgets/calibration_preview_painter.dart';
 
 /// Shows the result of a calibration photo analysis.
 ///
-/// Displays detected pellet positions, before/after pattern comparisons,
-/// and lets the user accept or discard the calibration. The user can tap
-/// detected pellets to remove false positives, or tap empty space to add
-/// missed pellets.
+/// Displays detected pellet positions overlaid on the rectified target photo,
+/// before/after pattern comparisons, and lets the user accept or discard the
+/// calibration. The user can tap detected pellets to remove false positives,
+/// or tap empty space to add missed pellets.
 class CalibrationResultScreen extends StatefulWidget {
   final CalibrationSession session;
   final PatternResult before;
   final PatternResult after;
   final ShotgunSetup setup;
   final double distanceYards;
+  final Uint8List rectifiedImageBytes;
 
   const CalibrationResultScreen({
     super.key,
@@ -29,6 +32,7 @@ class CalibrationResultScreen extends StatefulWidget {
     required this.after,
     required this.setup,
     required this.distanceYards,
+    required this.rectifiedImageBytes,
   });
 
   @override
@@ -44,11 +48,12 @@ class _CalibrationResultScreenState extends State<CalibrationResultScreen> {
   int? _selectedIndex;
   bool _edited = false;
   bool _addMode = false;
+  ui.Image? _backgroundImage;
 
   /// Key for the preview area so we can find its RenderBox for hit-testing.
   final _previewKey = GlobalKey();
 
-  static const _sheetInches = 24.0;
+  double get _sheetInches => widget.session.sheetSizeInches;
 
   @override
   void initState() {
@@ -56,6 +61,13 @@ class _CalibrationResultScreenState extends State<CalibrationResultScreen> {
     _session = widget.session;
     _after = widget.after;
     _detectedPellets = List<Offset>.from(widget.session.pelletCoordinates);
+    _decodeImage();
+  }
+
+  Future<void> _decodeImage() async {
+    final codec = await ui.instantiateImageCodec(widget.rectifiedImageBytes);
+    final frame = await codec.getNextFrame();
+    if (mounted) setState(() => _backgroundImage = frame.image);
   }
 
   void _rebuildSession() {
@@ -236,6 +248,8 @@ class _CalibrationResultScreenState extends State<CalibrationResultScreen> {
                             detectedPellets: _detectedPellets,
                             addedPellets: _addedPellets,
                             selectedIndex: _selectedIndex,
+                            backgroundImage: _backgroundImage,
+                            sheetSizeInches: _sheetInches,
                           ),
                           size: Size.infinite,
                         ),
@@ -246,128 +260,134 @@ class _CalibrationResultScreenState extends State<CalibrationResultScreen> {
               ),
             ),
 
-            // ── Metrics comparison ──
+            // ── Metrics + buttons ──
             Expanded(
-              flex: 4,
+              flex: 3,
               child: Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
-                ),
                 decoration: BoxDecoration(
                   color: Colors.grey[850],
                   borderRadius: const BorderRadius.vertical(
                     top: Radius.circular(20),
                   ),
                 ),
-                child: SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Editing hint
-                      if (!_edited)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Text(
-                            'Use Select mode to tap a pellet twice to remove it. '
-                            'Use Add mode to tap where missed pellets should be.',
-                            style: TextStyle(
-                              color: Colors.white38,
-                              fontSize: 11,
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
-                        ),
-
-                      // Delete button for selected pellet
-                      if (_selectedIndex != null)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: SizedBox(
-                            width: double.infinity,
-                            child: OutlinedButton.icon(
-                              icon: const Icon(Icons.delete_outline, size: 16),
-                              label: const Text('Remove selected pellet'),
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: Colors.redAccent,
-                                side: const BorderSide(color: Colors.redAccent),
+                child: Column(
+                  children: [
+                    // Scrollable metrics
+                    Expanded(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Editing hint
+                            if (!_edited)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Text(
+                                  'Tap a pellet twice to remove it. '
+                                  'Use Add mode to place missed pellets.',
+                                  style: TextStyle(
+                                    color: Colors.white38,
+                                    fontSize: 11,
+                                    fontStyle: FontStyle.italic,
+                                  ),
+                                ),
                               ),
-                              onPressed: () => _removePellet(_selectedIndex!),
+
+                            // Delete button for selected pellet
+                            if (_selectedIndex != null)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: SizedBox(
+                                  width: double.infinity,
+                                  child: OutlinedButton.icon(
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      size: 16,
+                                    ),
+                                    label: const Text('Remove selected pellet'),
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: Colors.redAccent,
+                                      side: const BorderSide(
+                                        color: Colors.redAccent,
+                                      ),
+                                    ),
+                                    onPressed: () =>
+                                        _removePellet(_selectedIndex!),
+                                  ),
+                                ),
+                              ),
+
+                            // Detection summary
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                _pill(
+                                  'Found',
+                                  '${_session.detectedPelletCount}',
+                                ),
+                                _pill(
+                                  'Expected',
+                                  '${widget.setup.pelletCount}',
+                                ),
+                                _pill(
+                                  'Confidence',
+                                  '${(_session.sessionConfidence * 100).round()}%',
+                                ),
+                                if (_session.clippingLikelihood > 0.05)
+                                  _pill(
+                                    'Clipping',
+                                    '${(_session.clippingLikelihood * 100).round()}%',
+                                    color: Colors.red,
+                                  ),
+                                if (_edited)
+                                  _pill('Edited', 'Yes', color: Colors.amber),
+                              ],
                             ),
-                          ),
-                        ),
+                            const SizedBox(height: 12),
 
-                      // Detection summary
-                      _sectionHeader('Detection'),
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          _pill(
-                            'Pellets found',
-                            '${_session.detectedPelletCount}',
-                          ),
-                          _pill('Expected', '${widget.setup.pelletCount}'),
-                          _pill(
-                            'Confidence',
-                            '${(_session.sessionConfidence * 100).round()}%',
-                          ),
-                          if (_session.clippingLikelihood > 0.05)
-                            _pill(
-                              'Clipping',
-                              '${(_session.clippingLikelihood * 100).round()}%',
-                              color: Colors.red,
+                            // Before / After comparison
+                            _comparisonRow(
+                              'Spread',
+                              '${widget.before.spreadDiameterInches.toStringAsFixed(1)}"',
+                              '${_after.spreadDiameterInches.toStringAsFixed(1)}"',
                             ),
-                          if (_edited)
-                            _pill('Edited', 'Yes', color: Colors.amber),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-
-                      // Before / After comparison
-                      _sectionHeader('Pattern Comparison'),
-                      const SizedBox(height: 8),
-                      _comparisonRow(
-                        'Spread',
-                        '${widget.before.spreadDiameterInches.toStringAsFixed(1)}"',
-                        '${_after.spreadDiameterInches.toStringAsFixed(1)}"',
-                      ),
-                      _comparisonRow(
-                        'R50',
-                        '${widget.before.r50Inches.toStringAsFixed(1)}"',
-                        '${_after.r50Inches.toStringAsFixed(1)}"',
-                      ),
-                      _comparisonRow(
-                        'R75',
-                        '${widget.before.r75Inches.toStringAsFixed(1)}"',
-                        '${_after.r75Inches.toStringAsFixed(1)}"',
-                      ),
-                      _comparisonRow(
-                        '10" circle',
-                        '${widget.before.pelletsIn10Circle}',
-                        '${_after.pelletsIn10Circle}',
-                      ),
-                      _comparisonRow(
-                        '20" circle',
-                        '${widget.before.pelletsIn20Circle}',
-                        '${_after.pelletsIn20Circle}',
-                      ),
-                      if (_session.poiOffsetXInches.abs() > 0.3 ||
-                          _session.poiOffsetYInches.abs() > 0.3)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8),
-                          child: _pill(
-                            'POI offset',
-                            '${_session.poiOffsetXInches.toStringAsFixed(1)}" × ${_session.poiOffsetYInches.toStringAsFixed(1)}"',
-                            color: Colors.orange,
-                          ),
+                            _comparisonRow(
+                              'R50',
+                              '${widget.before.r50Inches.toStringAsFixed(1)}"',
+                              '${_after.r50Inches.toStringAsFixed(1)}"',
+                            ),
+                            _comparisonRow(
+                              'R75',
+                              '${widget.before.r75Inches.toStringAsFixed(1)}"',
+                              '${_after.r75Inches.toStringAsFixed(1)}"',
+                            ),
+                            _comparisonRow(
+                              '10" circle',
+                              '${widget.before.pelletsIn10Circle}',
+                              '${_after.pelletsIn10Circle}',
+                            ),
+                            _comparisonRow(
+                              '20" circle',
+                              '${widget.before.pelletsIn20Circle}',
+                              '${_after.pelletsIn20Circle}',
+                            ),
+                            _comparisonRow(
+                              'POI offset',
+                              '0.0" × 0.0"',
+                              '${_session.poiOffsetXInches.toStringAsFixed(1)}" × ${_session.poiOffsetYInches.toStringAsFixed(1)}"',
+                            ),
+                          ],
                         ),
-                      const SizedBox(height: 24),
+                      ),
+                    ),
 
-                      // Accept / Discard buttons
-                      Row(
+                    // ── Pinned buttons ──
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                      child: Row(
                         children: [
                           Expanded(
                             child: OutlinedButton(
@@ -403,8 +423,8 @@ class _CalibrationResultScreenState extends State<CalibrationResultScreen> {
                           ),
                         ],
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -444,18 +464,6 @@ class _CalibrationResultScreenState extends State<CalibrationResultScreen> {
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _sectionHeader(String text) {
-    return Text(
-      text,
-      style: const TextStyle(
-        color: Colors.white70,
-        fontSize: 13,
-        fontWeight: FontWeight.w600,
-        letterSpacing: 0.5,
       ),
     );
   }

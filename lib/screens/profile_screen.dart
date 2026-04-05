@@ -181,15 +181,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
 
-    final picker = ImagePicker();
+    // Show target setup sheet with size/distance fields
+    final sizeCtrl = TextEditingController(text: '24');
+    final distCtrl = TextEditingController(text: '20');
     final source = await showModalBottomSheet<ImageSource>(
       context: context,
       backgroundColor: Colors.grey[850],
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (_) => Padding(
-        padding: const EdgeInsets.all(20),
+      isScrollControlled: true,
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.fromLTRB(
+          20,
+          20,
+          20,
+          20 + MediaQuery.of(ctx).viewInsets.bottom,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -201,12 +209,91 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 fontWeight: FontWeight.bold,
               ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
+            GestureDetector(
+              onTap: () {
+                showDialog(
+                  context: ctx,
+                  builder: (_) => Dialog(
+                    backgroundColor: Colors.grey[900],
+                    insetPadding: const EdgeInsets.all(16),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: InteractiveViewer(
+                        child: Image.asset(
+                          'assets/images/instructions.jpg',
+                          fit: BoxFit.contain,
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.asset(
+                  'assets/images/instructions.jpg',
+                  height: 160,
+                  width: double.infinity,
+                  fit: BoxFit.cover,
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
             const Text(
-              'Fire one shot at a 24"×24" white sheet from 20 yds.\n'
-              'Photograph the full sheet with good contrast.',
-              style: TextStyle(color: Colors.white54, fontSize: 13),
+              'Tap image for full instructions',
+              style: TextStyle(color: Colors.white38, fontSize: 11),
               textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: sizeCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Target size (inches)',
+                      labelStyle: TextStyle(
+                        color: Colors.white54,
+                        fontSize: 13,
+                      ),
+                      enabledBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white24),
+                      ),
+                      focusedBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.orangeAccent),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: TextField(
+                    controller: distCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Distance (yards)',
+                      labelStyle: TextStyle(
+                        color: Colors.white54,
+                        fontSize: 13,
+                      ),
+                      enabledBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white24),
+                      ),
+                      focusedBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.orangeAccent),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 16),
             Row(
@@ -219,8 +306,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       foregroundColor: Colors.white70,
                       side: const BorderSide(color: Colors.white24),
                     ),
-                    onPressed: () =>
-                        Navigator.of(context).pop(ImageSource.gallery),
+                    onPressed: () => Navigator.of(ctx).pop(ImageSource.gallery),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -233,8 +319,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       backgroundColor: Colors.orangeAccent,
                       foregroundColor: Colors.black,
                     ),
-                    onPressed: () =>
-                        Navigator.of(context).pop(ImageSource.camera),
+                    onPressed: () => Navigator.of(ctx).pop(ImageSource.camera),
                   ),
                 ),
               ],
@@ -246,6 +331,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
     if (source == null || !mounted) return;
 
+    final sheetSize = double.tryParse(sizeCtrl.text) ?? 24.0;
+    final calibDist = double.tryParse(distCtrl.text) ?? 20.0;
+    sizeCtrl.dispose();
+    distCtrl.dispose();
+
+    final picker = ImagePicker();
     final xFile = await picker.pickImage(
       source: source,
       maxWidth: 2048,
@@ -280,7 +371,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     await cubit.analyzePhoto(
       imageFile: File(xFile.path),
       setup: setup,
-      distanceYards: 20,
+      distanceYards: calibDist,
+      sheetSizeInches: sheetSize,
     );
 
     if (!mounted) return;
@@ -297,7 +389,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
               before: state.before,
               after: state.after,
               setup: setup,
-              distanceYards: 20,
+              distanceYards: calibDist,
+              rectifiedImageBytes: state.rectifiedImage,
             ),
           ),
         ),

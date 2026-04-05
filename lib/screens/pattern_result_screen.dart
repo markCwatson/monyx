@@ -267,6 +267,7 @@ class _PatternResultScreenState extends State<PatternResultScreen> {
                     after: state.after,
                     setup: state.setup,
                     distanceYards: _distanceYards,
+                    rectifiedImageBytes: state.rectifiedImage,
                   ),
                 ),
               ),
@@ -678,20 +679,21 @@ class _CalibrateButton extends StatelessWidget {
   const _CalibrateButton({required this.setup});
 
   Future<void> _pickAndAnalyze(BuildContext context) async {
-    // Show instructions first — returns the chosen image source or null
-    final source = await showModalBottomSheet<ImageSource>(
+    // Show target setup sheet — returns config or null
+    final config = await showModalBottomSheet<_CalibrationConfig>(
       context: context,
       backgroundColor: Colors.grey[850],
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (_) => const _CalibrationInstructions(),
+      isScrollControlled: true,
+      builder: (_) => const _CalibrationSetup(),
     );
-    if (source == null || !context.mounted) return;
+    if (config == null || !context.mounted) return;
 
     final picker = ImagePicker();
     final xFile = await picker.pickImage(
-      source: source,
+      source: config.source,
       maxWidth: 2048,
       maxHeight: 2048,
       imageQuality: 90,
@@ -699,13 +701,12 @@ class _CalibrateButton extends StatelessWidget {
     if (xFile == null || !context.mounted) return;
 
     final cubit = context.read<ShotgunPatternCubit>();
-    final state = cubit.state;
-    final distance = state is PatternReady ? state.result.distanceYards : 20.0;
 
     cubit.analyzePhoto(
       imageFile: File(xFile.path),
       setup: setup,
-      distanceYards: distance,
+      distanceYards: config.distanceYards,
+      sheetSizeInches: config.sheetSizeInches,
     );
   }
 
@@ -755,13 +756,74 @@ class _CalibrateButton extends StatelessWidget {
   }
 }
 
-class _CalibrationInstructions extends StatelessWidget {
-  const _CalibrationInstructions();
+class _CalibrationConfig {
+  final ImageSource source;
+  final double sheetSizeInches;
+  final double distanceYards;
+  const _CalibrationConfig({
+    required this.source,
+    required this.sheetSizeInches,
+    required this.distanceYards,
+  });
+}
+
+class _CalibrationSetup extends StatefulWidget {
+  const _CalibrationSetup();
+
+  @override
+  State<_CalibrationSetup> createState() => _CalibrationSetupState();
+}
+
+class _CalibrationSetupState extends State<_CalibrationSetup> {
+  final _sizeCtrl = TextEditingController(text: '24');
+  final _distCtrl = TextEditingController(text: '20');
+
+  @override
+  void dispose() {
+    _sizeCtrl.dispose();
+    _distCtrl.dispose();
+    super.dispose();
+  }
+
+  _CalibrationConfig? _buildConfig(ImageSource source) {
+    final size = double.tryParse(_sizeCtrl.text);
+    final dist = double.tryParse(_distCtrl.text);
+    if (size == null || size <= 0 || dist == null || dist <= 0) return null;
+    return _CalibrationConfig(
+      source: source,
+      sheetSizeInches: size,
+      distanceYards: dist,
+    );
+  }
+
+  void _showInstructions(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        backgroundColor: Colors.grey[900],
+        insetPadding: const EdgeInsets.all(16),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: InteractiveViewer(
+            child: Image.asset(
+              'assets/images/instructions.jpg',
+              fit: BoxFit.contain,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.all(20),
+      padding: EdgeInsets.fromLTRB(
+        20,
+        20,
+        20,
+        20 + MediaQuery.of(context).viewInsets.bottom,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -776,14 +838,74 @@ class _CalibrationInstructions extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 16),
-          _step('1', 'Tape a 24" × 24" white sheet to your backstop'),
-          _step('2', 'Fire one shot from exactly 20 yards'),
-          _step('3', 'Take a photo of the full sheet straight-on'),
+          const SizedBox(height: 12),
+          GestureDetector(
+            onTap: () => _showInstructions(context),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.asset(
+                'assets/images/instructions.jpg',
+                height: 160,
+                width: double.infinity,
+                fit: BoxFit.cover,
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Center(
+            child: Text(
+              'Tap image for full instructions',
+              style: TextStyle(color: Colors.white38, fontSize: 11),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _sizeCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Target size (inches)',
+                    labelStyle: TextStyle(color: Colors.white54, fontSize: 13),
+                    enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white24),
+                    ),
+                    focusedBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.orangeAccent),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: TextField(
+                  controller: _distCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Distance (yards)',
+                    labelStyle: TextStyle(color: Colors.white54, fontSize: 13),
+                    enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white24),
+                    ),
+                    focusedBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.orangeAccent),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 8),
           const Text(
-            'Ensure the entire sheet is visible with good contrast. '
-            'The app will detect the page edges and pellet holes automatically.',
+            'Enter the side length of your square target and the distance '
+            'you shot from. Any target colour works.',
             style: TextStyle(color: Colors.white38, fontSize: 12),
           ),
           const SizedBox(height: 20),
@@ -797,8 +919,10 @@ class _CalibrationInstructions extends StatelessWidget {
                     foregroundColor: Colors.white70,
                     side: const BorderSide(color: Colors.white24),
                   ),
-                  onPressed: () =>
-                      Navigator.of(context).pop(ImageSource.gallery),
+                  onPressed: () {
+                    final cfg = _buildConfig(ImageSource.gallery);
+                    if (cfg != null) Navigator.of(context).pop(cfg);
+                  },
                 ),
               ),
               const SizedBox(width: 12),
@@ -811,43 +935,15 @@ class _CalibrationInstructions extends StatelessWidget {
                     backgroundColor: Colors.orangeAccent,
                     foregroundColor: Colors.black,
                   ),
-                  onPressed: () =>
-                      Navigator.of(context).pop(ImageSource.camera),
+                  onPressed: () {
+                    final cfg = _buildConfig(ImageSource.camera);
+                    if (cfg != null) Navigator.of(context).pop(cfg);
+                  },
                 ),
               ),
             ],
           ),
           const SizedBox(height: 8),
-        ],
-      ),
-    );
-  }
-
-  static Widget _step(String num, String text) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          CircleAvatar(
-            radius: 12,
-            backgroundColor: Colors.orangeAccent,
-            child: Text(
-              num,
-              style: const TextStyle(
-                color: Colors.black,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              text,
-              style: const TextStyle(color: Colors.white70, fontSize: 14),
-            ),
-          ),
         ],
       ),
     );
